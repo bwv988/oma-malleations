@@ -1,0 +1,39 @@
+{
+  // Omarchy menu extensions for ~/Develop/oma-malleations.
+  // Symlinked to ~/.config/omarchy/extensions/omarchy-menu.jsonc by install.sh
+  // and hot-reloaded by the shell (or `omarchy menu refresh`).
+  //
+  // Dotted ids imply the hierarchy; `action` runs through `bash -lc`, so
+  // ~/.local/bin/fluxfm is on PATH.
+
+  // One Enter: launch cliamp on FluxFM Berlin (switches station if it is
+  // already playing).
+  "fluxfm": {
+    "icon": "",
+    "label": "FluxFM",
+    "description": "Play FluxFM Berlin in cliamp",
+    "action": "fluxfm berlin"
+  },
+
+  // Everything else FluxFM broadcasts, one row per channel.
+  "fluxfm-channels": {
+    "icon": "",
+    "label": "FluxFM Channels",
+    "description": "15 FluxFM streams · cliamp"
+  },
+  "fluxfm-channels.berlin": { "icon": "", "label": "FluxFM Berlin", "description": "24/7 · live", "action": "fluxfm berlin" },
+  "fluxfm-channels.alternative": { "icon": "", "label": "FluxFM Alternative", "action": "fluxfm alternative" },
+  "fluxfm-channels.60s": { "icon": "", "label": "FluxFM 60s", "action": "fluxfm 60s" },
+  "fluxfm-channels.70s": { "icon": "", "label": "FluxFM 70s", "action": "fluxfm 70s" },
+  "fluxfm-channels.80s": { "icon": "", "label": "FluxFM 80s", "action": "fluxfm 80s" },
+  "fluxfm-channels.chillhop": { "icon": "", "label": "FluxFM ChillHop", "action": "fluxfm chillhop" },
+  "fluxfm-channels.chillout": { "icon": "", "label": "FluxFM Chillout", "action": "fluxfm chillout" },
+  "fluxfm-channels.indie-disco": { "icon": "", "label": "FluxFM Indie Disco", "action": "fluxfm indie-disco" },
+  "fluxfm-channels.clubsandwich": { "icon": "", "label": "FluxFM Clubsandwich", "action": "fluxfm clubsandwich" },
+  "fluxfm-channels.sound-of-berlin": { "icon": "", "label": "FluxFM Sound of Berlin", "action": "fluxfm sound-of-berlin" },
+  "fluxfm-channels.elektro": { "icon": "", "label": "FluxFM Elektro", "action": "fluxfm elektro" },
+  "fluxfm-channels.kompensator": { "icon": "", "label": "FluxFM FluxKompensator", "action": "fluxfm kompensator" },
+  "fluxfm-channels.pop": { "icon": "", "label": "FluxFM Pop Radio", "action": "fluxfm pop" },
+  "fluxfm-channels.kinder": { "icon": "", "label": "FluxFM Kinder", "action": "fluxfm kinder" },
+  "fluxfm-channels.new-yorker": { "icon": "", "label": "FluxFM New Yorker Instore", "action": "fluxfm new-yorker" }
+}

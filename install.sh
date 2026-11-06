@@ -24,7 +24,7 @@ mode=install
 case "${1:-}" in
   --dry-run | -n) dry_run=1 ;;
   status | --status) mode=status ;;
-  -h | --help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h | --help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   "") ;;
   *)
     printf 'install.sh: unknown argument %q\n' "$1" >&2

@@ -14,6 +14,12 @@ Named after Omarchy's own sales pitch — a malleable OS. Everything here lives 
 | `config/omarchy/extensions/omarchy-menu.jsonc` | `~/.config/omarchy/extensions/omarchy-menu.jsonc` | `SUPER + SPACE` → **FluxFM** (one Enter) and **FluxFM Channels** (15 stations) |
 | `install.sh` | – | Idempotent symlink installer with backups |
 
+Menu icons are Material Design glyphs from the Nerd Font the bar resolves
+(`fontFamily: monospace` → JetBrainsMono Nerd Font): `md-radio` U+F0439 on
+**FluxFM**, `md-radio_tower` U+F043B on **FluxFM Channels**, `md-music_note`
+U+F0387 on each channel. Checked with `fc-list ':charset=f0439'` and the font's
+own glyph names — not guessed, so no tofu boxes.
+
 ### FluxFM usage
 
 ```bash

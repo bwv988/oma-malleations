@@ -11,14 +11,52 @@ Named after Omarchy's own sales pitch — a malleable OS. Everything here lives 
 | Path | Installs to | What it does |
 |---|---|---|
 | `bin/fluxfm` | `~/.local/bin/fluxfm` | Plays FluxFM (Berlin) channels in `cliamp`, the TUI player Omarchy ships |
-| `config/omarchy/extensions/omarchy-menu.jsonc` | `~/.config/omarchy/extensions/omarchy-menu.jsonc` | `SUPER + SPACE` → **FluxFM** (one Enter) and **FluxFM Channels** (15 stations) |
+| `bin/omarun` | `~/.local/bin/omarun` | Windows+R "run now" box: `SUPER + R`, type a command, it runs detached and the box closes |
+| `config/hypr/bindings.lua` | `~/.config/hypr/bindings.lua` | `SUPER + R` → Run now, `SUPER + SHIFT + R` → Run again (neither key was bound) |
+| `config/omarchy/extensions/omarchy-menu.jsonc` | `~/.config/omarchy/extensions/omarchy-menu.jsonc` | `SUPER + SPACE` → **Run now**, **Run again**, **FluxFM** (one Enter) and **FluxFM Channels** (15 stations) |
 | `install.sh` | – | Idempotent symlink installer with backups |
 
 Menu icons are Material Design glyphs from the Nerd Font the bar resolves
 (`fontFamily: monospace` → JetBrainsMono Nerd Font): `md-radio` U+F0439 on
 **FluxFM**, `md-radio_tower` U+F043B on **FluxFM Channels**, `md-music_note`
-U+F0387 on each channel. Checked with `fc-list ':charset=f0439'` and the font's
+U+F0387 on each channel, `md-run_fast` U+F046E on **Run now**, `md-history`
+U+F02DA on **Run again**. Checked with `fc-list ':charset=f0439'` and the font's
 own glyph names — not guessed, so no tofu boxes.
+
+### Run now
+
+`SUPER + R` opens the Omarchy menu's own input mode — one narrow themed field
+(`--width 520`, override with `OMARUN_WIDTH`) — runs what you type, and is gone
+before the app maps. Escape runs nothing; a second `SUPER + R` closes the box.
+
+```bash
+omarun                  # the box                      SUPER + R
+omarun --history        # pick from what you ran      SUPER + SHIFT + R
+omarun --list           # the remembered commands, newest first
+omarun btop             # no box, just run it (what the menu rows do)
+```
+
+What a typed line means, in the order it is tried:
+
+| Typed | Runs |
+|---|---|
+| `!lazygit` | leading `!` → in the default terminal (`omarchy-launch-tui`) |
+| `https://omarchy.org`, `omarchy.org` | URL or bare host → default browser |
+| `~/Develop`, `~/.config/hypr` | directory / non-executable file → `xdg-open` |
+| `btop`, `cliamp`, `nvim` | desktop entry says `Terminal=true` → the terminal |
+| `code ~/proj`, `firefox --new-window` | argv, no shell, via `uwsm-app --` |
+| `make \| tee log`, `EDITOR=nvim git log` | shell operators or `VAR=` prefix → `bash -lc` |
+
+So a browser lands in `app-graphical.slice` under systemd exactly like
+`SUPER + SHIFT + B` does, and the keypress is never held open by the app:
+every launch is `setsid --fork`'d, with its stdout/stderr appended to
+`~/.local/state/omarun/run.log` because a detached program has no terminal left
+to complain to. A command that cannot be found, or a line with an unbalanced
+quote, answers with an Omarchy notification instead of nothing.
+
+History is `~/.local/state/omarun/history`: last 200 commands, newest last,
+earlier duplicates dropped. Entries holding a literal tab are kept but not
+offered in the picker (tab is the menu's own field separator).
 
 ### FluxFM usage
 
@@ -41,13 +79,15 @@ fluxfm --sync-playlist  # rewrite the all-channels playlist for the cliamp TUI
 ```bash
 cd ~/Develop/oma-malleations
 ./install.sh --dry-run   # see what it would touch
-./install.sh             # link, write cliamp playlist, refresh the menu
+./install.sh             # link, write cliamp playlist, refresh menu + Hyprland
 ./install.sh status      # what is linked, what backups exist
 ```
 
 Real files in the way are moved to
 `~/.local/state/oma-malleations/backups/<timestamp>/`, so a first install
-preserves whatever you had in `omarchy-menu.jsonc`. Nothing is deleted.
+preserves whatever you had in `omarchy-menu.jsonc` or `bindings.lua`. Nothing is
+deleted. After linking, `install.sh` reloads the menu, runs `hyprctl reload` and
+prints `hyprctl configerrors` if Hyprland complained about the bindings.
 
 ## How to keep track of customizations (what people actually do)
 
@@ -99,3 +139,15 @@ Verified sources used while building this:
   preinstalled and bound to `SUPER + SHIFT + ALT + M`).
 - `cliamp --help`, `cliamp open --help` (`cliamp://play?url=…` plays over IPC or
   starts the player), `cliamp playlist create` (playlist TOML format).
+- `omarchy-menu-input` / `omarchy-menu-select` (the menu's `input` and `select`
+  modes, `--width`, and the `<glyph><TAB><label>` option form that returns only
+  the label), `Menu.qml` `applyDmenuSelection` (Enter closes the box with the
+  typed text, no matching row needed).
+- `/usr/share/omarchy/shell/Commons/Util.qml` (`execDetached` is `bash -lc`;
+  the comment there on keeping input out of a shell is why `omarun` splits argv
+  itself), `/usr/share/omarchy/default/hypr/helpers.lua` (`{ launch = … }` wraps
+  with `uwsm-app --`, so a plain `o.bind` string stays unwrapped).
+- `uwsm-app --help` (accepts an executable name or path, blocks until the app
+  exits — hence `setsid --fork`), `/usr/share/applications/*.desktop`
+  `Terminal=true` (btop, cliamp, nvim: the terminal-app test),
+  `omarchy-launch-tui`, `omarchy-notification-send`.

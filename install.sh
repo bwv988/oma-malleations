@@ -71,7 +71,9 @@ link() {
 show_status() {
   local dest
   for dest in "$HOME/.config/omarchy/extensions/omarchy-menu.jsonc" \
-    "$HOME/.local/bin/fluxfm"; do
+    "$HOME/.local/bin/fluxfm" \
+    "$HOME/.local/bin/omarun" \
+    "$HOME/.config/hypr/bindings.lua"; do
     if [[ -L $dest ]]; then
       printf '%-52s -> %s\n' "$dest" "$(readlink "$dest")"
     elif [[ -e $dest ]]; then
@@ -94,9 +96,11 @@ fi
 link "config/omarchy/extensions/omarchy-menu.jsonc" \
   "$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
 link "bin/fluxfm" "$HOME/.local/bin/fluxfm"
+link "bin/omarun" "$HOME/.local/bin/omarun"
+link "config/hypr/bindings.lua" "$HOME/.config/hypr/bindings.lua"
 
 if ((!dry_run)); then
-  chmod +x "$repo/bin/fluxfm"
+  chmod +x "$repo/bin/fluxfm" "$repo/bin/omarun"
   # All-channels playlist, visible inside cliamp under Local Playlists.
   "$repo/bin/fluxfm" --sync-playlist
   # Re-read the JSONC extensions without restarting the bar.
@@ -104,5 +108,13 @@ if ((!dry_run)); then
     omarchy menu refresh >/dev/null 2>&1 || \
       printf 'note: run "omarchy menu refresh" (or "omarchy restart shell") to reload the menu\n'
   fi
-  printf '\nDone. SUPER + SPACE, then type "flux".\n'
+  # Keybindings are Lua: Hyprland reloads on save, then says what broke.
+  if command -v hyprctl >/dev/null 2>&1; then
+    hyprctl reload >/dev/null 2>&1 || true
+    if hyprctl configerrors 2>&1 | grep -qv '^$'; then
+      printf '\nHyprland config errors:\n'
+      hyprctl configerrors
+    fi
+  fi
+  printf '\nDone. SUPER + R runs, SUPER + SHIFT + R runs again.\n'
 fi

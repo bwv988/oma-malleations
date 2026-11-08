@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+# omarun - a Windows+R "run now" box for Omarchy
+#
+# Tracked in ~/Develop/oma-malleations. Installed as ~/.local/bin/omarun.
+# Bound to SUPER + R (SUPER + SHIFT + R for history), and on the Omarchy menu
+# as "Run now" / "Run again".
+#
+#   omarun                 prompt, run what you type, get out of the way
+#   omarun --history       prompt over the commands you ran before
+#   omarun --list          show the remembered commands, newest first
+#   omarun <command...>    run without prompting (menu rows, scripts)
+#
+# The box is the Omarchy menu's own input mode: one narrow themed field that is
+# gone the moment you press Enter. Escape runs nothing; pressing the key again
+# while the box is open closes it.
+#
+# What a typed line means, in the order it is tried:
+#
+#   !btop          leading ! runs in the default terminal (omarchy-launch-tui)
+#   https://x.dev  URL, or www.x.dev, or bare x.dev -> the default browser
+#   ~/Develop      existing directory -> file manager, other existing file ->
+#                  xdg-open, existing executable -> run it
+#   btop -p 1      command line, split into argv without a shell; a program
+#                  whose desktop entry says Terminal=true goes to the terminal,
+#                  anything else to uwsm-app, like Omarchy's own keybindings
+#   make | tee log a line with shell operators ( ; | & < > ` $( ) goes through
+#                  bash -lc instead, so pipelines and redirections work
+#
+# Every launch is detached with setsid --fork, so the keypress is finished well
+# before the app maps, and its stdout/stderr land in
+# ~/.local/state/omarun/run.log because a detached program has no terminal left
+# to complain to.
+
+set -euo pipefail
+
+state="${XDG_STATE_HOME:-$HOME/.local/state}/omarun"
+history_file="$state/history"
+log_file="$state/run.log"
+lock_file="$state/prompt.lock"
+width="${OMARUN_WIDTH:-520}"
+history_keep=200
+history_rows=15
+
+# Nerd Font glyphs the bar resolves, names read out of JetBrainsMono Nerd Font.
+glyph_history=$'\U000F02DA' # md-history
+glyph_alert=$'\U000F002A'   # md-alert_outline
+
+# A bare host, matched only when no file of that name exists: omarchy.org,
+# omarchy.org/docs, example.com:8080.
+host_re='^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,6}(:[0-9]+)?(/[[:graph:]]*)?$'
+
+# Where .desktop files live, user entry first.
+app_dirs=("${XDG_DATA_HOME:-$HOME/.local/share}/applications")
+IFS=: read -ra data_dirs <<<"${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+for dir in "${data_dirs[@]}"; do
+  app_dirs+=("$dir/applications")
+done
+
+argv=()
+
+trim() {
+  local s=$1
+  s=${s#"${s%%[![:space:]]*}"}
+  s=${s%"${s##*[![:space:]]}"}
+  printf '%s' "$s"
+}
+
+complain() { # <headline> <detail>
+  omarchy-notification-send -u critical -g "$glyph_alert" "$1" "$2" >/dev/null 2>&1 ||
+    notify-send "$1" "$2" >/dev/null 2>&1 ||
+      printf 'omarun: %s: %s\n' "$1" "$2" >&2
+}
+
+record() { # <line as typed>
+  mkdir -p "$state"
+  {
+    grep -Fxv -- "$1" "$history_file" 2>/dev/null || true
+    printf '%s\n' "$1"
+  } | tail -n "$history_keep" >"$history_file.tmp"
+  mv "$history_file.tmp" "$history_file"
+}
+
+recent() { # newest first, deduped; a tab is the menu's own field separator
+  [[ -f $history_file ]] || return 0
+  tac "$history_file" | awk '!seen[$0]++ && $0 !~ /\t/' | head -n "$history_rows"
+}
+
+# Split a command line into argv the way a shell would: quote removal, ~ and $
+# expansion. The split happens in a subshell with globbing off, so an unbalanced
+# quote leaves argv empty (reported, not fatal) and no word is ever executed.
+tokenize() { # <line>
+  argv=()
+  mapfile -d '' -t argv < <(
+    set -f
+    eval "set -- $1" 2>/dev/null || exit 1
+    printf '%s\0' "$@"
+  )
+  (( ${#argv[@]} ))
+}
+
+terminal_app() { # <program name>
+  local want=$1 dir entry exec_line name
+  for dir in "${app_dirs[@]}"; do
+    [[ -d $dir ]] || continue
+    for entry in "$dir"/*.desktop; do
+      [[ -f $entry ]] || continue
+      grep -q '^Terminal=true' "$entry" || continue
+      exec_line=$(sed -n 's/^Exec=//p' "$entry" | head -1)
+      exec_line=${exec_line//\"/}
+      exec_line=${exec_line//%[a-zA-Z]/}
+      exec_line=${exec_line%%[[:space:]]*}
+      [[ ${exec_line##*/} == "$want" ]] && return 0
+      while IFS= read -r name; do
+        name=${name#Name=}
+        [[ ${name,,} == "${want,,}" ]] && return 0
+      done < <(grep '^Name=' "$entry")
+    done
+  done
+  return 1
+}
+
+spawn() { # <program> [args...]
+  mkdir -p "$state"
+  setsid --fork "$@" >>"$log_file" 2>&1 </dev/null
+}
+
+run_line() { # <line as typed>
+  local raw=$1 force_tui=0 line needs_shell=0 program
+  line=$(trim "$raw")
+  [[ $line ]] || return 3
+
+  if [[ $line == '!'* ]]; then
+    force_tui=1
+    line=$(trim "${line#!}")
+    [[ $line ]] || return 3
+  fi
+
+  argv=()
+  case $line in
+    *[';|&<>()`']* | *'$('* | *$'\n'*) needs_shell=1 ;;
+  esac
+
+  if ((needs_shell)); then
+    record "$raw"
+    spawn bash -lc "$line"
+    return 0
+  fi
+
+  tokenize "$line" || {
+    complain "Nothing to run" "$line (unbalanced quote?)"
+    return 1
+  }
+
+  # A leading VAR=value is a shell prefix, not a program name.
+  if [[ ${argv[0]} =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+    record "$raw"
+    spawn bash -lc "$line"
+    return 0
+  fi
+
+  # One word that is a URL, a host, or a path gets opened rather than execed.
+  if [[ ${#argv[@]} -eq 1 ]]; then
+    local word=${argv[0]}
+    if [[ $word == *"://"* || $word == www.* ]] ||
+      { [[ ! -e $word ]] && [[ $word =~ $host_re ]]; }; then
+      record "$raw"
+      spawn omarchy-launch-browser "$word"
+      return 0
+    fi
+    # A directory, or a file that is not executable, opens in its default
+    # application. An executable file falls through and is run.
+    if [[ -e $word ]] && [[ ! -x $word || -d $word ]]; then
+      record "$raw"
+      spawn xdg-open "$word"
+      return 0
+    fi
+  fi
+
+  program=${argv[0]}
+  if [[ $program == */* ]]; then
+    [[ -x $program ]] || {
+      complain "Cannot run $program" "No such program."
+      return 1
+    }
+  elif ! command -v -- "$program" >/dev/null 2>&1; then
+    complain "Cannot run $program" "Not installed, and not a path, URL, or file."
+    return 1
+  fi
+
+  record "$raw"
+  if ((force_tui)) || terminal_app "${program##*/}"; then
+    spawn omarchy-launch-tui "${argv[@]}"
+  else
+    spawn uwsm-app -- "${argv[@]}"
+  fi
+}
+
+# The header comment above the code is the help text.
+usage() { sed -n '/^#!/d; /^set -euo/q; s/^# \{0,1\}//p' "$0"; }
+
+case "${1:-}" in
+  -h | --help | help)
+    usage
+    exit 0
+    ;;
+  --list | list)
+    recent
+    exit 0
+    ;;
+esac
+
+# --history picks from what was run before; with nothing remembered it is the
+# ordinary prompt. Any argument skips the box entirely and runs that instead.
+mode=prompt
+if [[ ${1:-} == --history || ${1:-} == --recent ]]; then
+  mode=history
+  shift
+fi
+
+if (( $# )); then
+  run_line "$*"
+  exit $?
+fi
+
+mkdir -p "$state"
+exec 9>"$lock_file"
+if ! flock -n 9; then
+  # Already waiting on a box: this press closes it.
+  omarchy menu close >/dev/null 2>&1 || true
+  exit 0
+fi
+
+if [[ $mode == history ]]; then
+  options=()
+  while IFS= read -r entry; do
+    options+=("$glyph_history"$'\t'"$entry")
+  done < <(recent)
+  if (( ${#options[@]} )); then
+    line=$(omarchy-menu-select "Run again" "${options[@]}" -- --width "$width" 2>/dev/null) || exit 0
+    run_line "$line"
+    exit $?
+  fi
+fi
+
+line=$(omarchy-menu-input "Run" --width "$width" 2>/dev/null) || exit 0
+run_line "$line"

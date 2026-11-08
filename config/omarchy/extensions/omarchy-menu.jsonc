@@ -6,6 +6,22 @@
   // Dotted ids imply the hierarchy; `action` runs through `bash -lc`, so
   // ~/.local/bin/fluxfm is on PATH.
 
+  // The run box (SUPER + R) and its remembered-commands picker (SUPER + SHIFT + R).
+  // Typing a command here does the same thing: it runs detached and the box
+  // closes before the app maps.
+  "run": {
+    "icon": "󰑮",
+    "label": "Run now",
+    "description": "Type a command, run it in the background · SUPER + R",
+    "action": "omarun"
+  },
+  "run-again": {
+    "icon": "󰋚",
+    "label": "Run again",
+    "description": "Pick from the commands you ran · SUPER + SHIFT + R",
+    "action": "omarun --history"
+  },
+
   // One Enter: launch cliamp on FluxFM Berlin (switches station if it is
   // already playing).
   "fluxfm": {

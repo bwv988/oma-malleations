@@ -14,7 +14,8 @@ Named after Omarchy's own sales pitch — a malleable OS. Everything here lives 
 | `bin/omarun` | `~/.local/bin/omarun` | Windows+R "run now" box: `SUPER + R`, type a command, it runs detached and the box closes |
 | `config/hypr/bindings.lua` | `~/.config/hypr/bindings.lua` | `SUPER + R` → Run now, `SUPER + SHIFT + R` → Run again (neither key was bound) |
 | `config/omarchy/extensions/omarchy-menu.jsonc` | `~/.config/omarchy/extensions/omarchy-menu.jsonc` | `SUPER + SPACE` → **Run now**, **Run again**, **FluxFM** (one Enter) and **FluxFM Channels** (15 stations) |
-| `install.sh` | – | Idempotent symlink installer with backups |
+| `config/tmux/oma-malleations.conf` | `~/.config/tmux/oma-malleations.conf` | My tmux deltas over the Omarchy default: `Ctrl+a` prefix, `Shift+arrow` window switching |
+| `install.sh` | – | Idempotent symlink installer with backups; layers the tmux deltas onto the stock file |
 
 Menu icons are Material Design glyphs from the Nerd Font the bar resolves
 (`fontFamily: monospace` → JetBrainsMono Nerd Font): `md-radio` U+F0439 on
@@ -22,6 +23,56 @@ Menu icons are Material Design glyphs from the Nerd Font the bar resolves
 U+F0387 on each channel, `md-run_fast` U+F046E on **Run now**, `md-history`
 U+F02DA on **Run again**. Checked with `fc-list ':charset=f0439'` and the font's
 own glyph names — not guessed, so no tofu boxes.
+
+### tmux
+
+Two small changes to Omarchy's stock tmux config, and nothing else:
+
+| Stock | Mine |
+|---|---|
+| prefix `Ctrl+Space`, second prefix `Ctrl+b` | prefix `Ctrl+a`, no second prefix |
+| — | `Shift+Left` / `Shift+Right` also switch windows, next to the stock `Alt+Left/Right` |
+
+`Ctrl+a Ctrl+a` still sends a literal `Ctrl+a` to the inner program, and the
+stock `send-prefix` binding on the now-unreachable `Ctrl+Space` is unbound so the
+`?` keybindings popup shows one row, not two.
+
+**The delta is the whole delta.** Stock and my old config were each loaded into a
+throwaway tmux server (`tmux -f /dev/null`, every key table unbound first), and
+the full `show-options -g` plus `list-keys -a` output diffed with only the prefix
+label normalised. The two were identical, so these lines are everything I had
+changed — nothing else was left behind when the file became a snippet.
+
+The snippet **lays over** the stock file rather than replacing it: `install.sh`
+keeps `~/.config/tmux/tmux.conf` as the shipped Omarchy default and makes its last
+line `source-file ~/.config/tmux/oma-malleations.conf`. So a future Omarchy tmux
+config (new bindings, new options) still arrives, and only the two deltas above
+live here. `./install.sh` is idempotent: it appends that one line only when it is
+missing, then sources the result into the running server.
+
+**Worth knowing:**
+
+- **`~/.config/tmux/tmux.conf` used to be a symlink into `~/Develop/dotfiles`**,
+  which kept its own full copy of Omarchy's tmux config. `omarchy refresh tmux`
+  runs through `omarchy-refresh-config`, whose `cp -f` **writes through a
+  symlink** — so a refresh would have silently edited that repo instead of
+  `~/.config/`. `install.sh` now stashes the symlink (it is still a symlink in
+  `~/.local/state/oma-malleations/backups/20261108-210031/.config/tmux/`) and
+  writes a real stock copy. That dotfiles copy of the tmux config is unused now;
+  deleting it, and the install step that links it, is safe.
+- **Applying it never kills tmux.** `omarchy-restart-tmux` only runs
+  `tmux source-file` when a server is up; there is no `kill-server`, so
+  `./install.sh` mid-session leaves every window and the processes in it alone.
+- **The `?` popup is honest.** `omarchy-menu-tmux-keybindings` sources the config
+  into a throwaway server with every table unbound first, so it shows exactly
+  what the snippet does — *including* leftover rows. That is why the replaced
+  `C-Space` binding is unbound rather than left to languish unreachable.
+- **Recovery round-trip, checked:** `omarchy refresh tmux` restores the stock file
+  and drops the include line (prefix back to `Ctrl+Space`); `./install.sh`
+  re-appends the line and sources it (`Ctrl+a`, both Shift bindings back).
+  `./install.sh status` reports which state the live file is in: `symlink to
+  another repo`, `Omarchy default + oma-malleations.conf`, `real file, does not
+  source the snippet`, or `missing`.
 
 ### Run now
 
@@ -79,15 +130,24 @@ fluxfm --sync-playlist  # rewrite the all-channels playlist for the cliamp TUI
 ```bash
 cd ~/Develop/oma-malleations
 ./install.sh --dry-run   # see what it would touch
-./install.sh             # link, write cliamp playlist, refresh menu + Hyprland
+./install.sh             # link, cliamp playlist, reload menu + Hyprland + tmux
 ./install.sh status      # what is linked, what backups exist
 ```
 
 Real files in the way are moved to
 `~/.local/state/oma-malleations/backups/<timestamp>/`, so a first install
-preserves whatever you had in `omarchy-menu.jsonc` or `bindings.lua`. Nothing is
-deleted. After linking, `install.sh` reloads the menu, runs `hyprctl reload` and
-prints `hyprctl configerrors` if Hyprland complained about the bindings.
+preserves whatever you had in `omarchy-menu.jsonc` or `bindings.lua` — and the
+symlink that used to be `~/.config/tmux/tmux.conf`. Nothing is deleted.
+
+After linking, `install.sh` reloads the menu, runs `hyprctl reload` and prints
+`hyprctl configerrors` if Hyprland complained about the bindings, then sources
+the tmux config into the running server.
+
+A **symlink** in the way is moved aside and never written through, so installing
+from this repo can't modify a file that belongs to another checkout — and neither
+can an `omarchy refresh` that copies over it, since the live path is a real file
+again. The tmux config is the case this was built for; see [tmux](#tmux) for what
+that symlink was and where it went.
 
 ## How to keep track of customizations (what people actually do)
 
@@ -121,14 +181,20 @@ Omarchy-specific notes that matter more than the tooling:
 - **Migrations and updates** touch `/usr/share/omarchy/` and `~/.local/state/`,
   not your `~/.config/` files; the real risk is *stock* config gaining new
   options, which a wholesale copied file hides. Another reason to keep tracked
-  files small and specific (this repo overrides only the menu extension).
+  files small and specific (this repo overrides only the menu extension, and for
+  tmux keeps a delta snippet that the stock file sources).
+- **A stock config with no extension point** (tmux, btop) doesn't need a
+  wholesale copy: keep the shipped file and have it `source`/`include` a tracked
+  snippet. You lose nothing on update and still get the change. `install.sh`'s
+  `layer` does that for tmux.
 - Committing the `/usr/share/omarchy/` file you edited "for reference" is the
   one anti-pattern: it will look authoritative later and be wrong.
 
 ## Adding a new malleation
 
 1. Put the file in the repo under `config/...` or `bin/...` (mirror the real path).
-2. Add a `link` line in `install.sh`.
+2. Add a `link` line in `install.sh` — or a `layer` line, if the file is a
+   snippet that a stock config should `source` instead of replacing it.
 3. `./install.sh`, commit.
 
 Verified sources used while building this:
@@ -151,3 +217,12 @@ Verified sources used while building this:
   exits — hence `setsid --fork`), `/usr/share/applications/*.desktop`
   `Terminal=true` (btop, cliamp, nvim: the terminal-app test),
   `omarchy-launch-tui`, `omarchy-notification-send`.
+- `omarchy-refresh-tmux` (`omarchy-refresh-config tmux/tmux.conf`), whose `cp -f`
+  **follows a symlink and writes through it** — that is why `layer` moves a
+  symlink aside before copying, and why the tmux delta is a snippet, not a
+  tracked copy of the whole file. `omarchy-restart-tmux` only sources the config
+  into a running server (no `kill-server`), so applying it is safe mid-session.
+  `omarchy-menu-tmux-keybindings` sources the config into a throwaway server with
+  every table unbound first, so the `?` popup reflects the snippet exactly —
+  stale bindings included, which is why the replaced `C-Space` row is unbound.
+  `tmux show-options -g prefix2` prints `None` when unset (stock sets `C-b`).

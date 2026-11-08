@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install.sh - link oma-malleations into the live system
 #
-#   ./install.sh            link everything, refresh the menu
+#   ./install.sh            link everything, reload menu, Hyprland and tmux
 #   ./install.sh --dry-run  show what would happen
 #   ./install.sh status     show link state
 #
@@ -11,7 +11,8 @@
 #
 # Real files that are in the way are moved to
 #   ~/.local/state/oma-malleations/backups/<timestamp>/
-# so nothing is ever lost. Re-running is safe.
+# so nothing is ever lost. Re-running is safe. A symlink in the way is moved
+# too, never written through, so no other repo's file is ever modified.
 
 set -euo pipefail
 
@@ -40,6 +41,15 @@ run() {
   fi
 }
 
+# stash <destination>: move a real file or symlink into this run's backup dir.
+stash() {
+  local dest=$1 rel
+  rel=${dest#"$HOME"/}
+  run mkdir -p "$backup/$(dirname "$rel")"
+  run mv "$dest" "$backup/$rel"
+  printf 'backup  %s -> %s\n' "$dest" "$backup/$rel"
+}
+
 # link <target-in-repo> <destination>
 link() {
   local src="$repo/$1" dest="$2" current
@@ -58,9 +68,7 @@ link() {
   fi
 
   if [[ -e $dest || -L $dest ]]; then
-    run mkdir -p "$backup/$(dirname "${dest#"$HOME"/}")"
-    run mv "$dest" "$backup/${dest#"$HOME"/}"
-    printf 'backup  %s -> %s\n' "$dest" "$backup/${dest#"$HOME"/}"
+    stash "$dest"
   fi
 
   run mkdir -p "$(dirname "$dest")"
@@ -68,12 +76,53 @@ link() {
   printf 'new     %s -> %s\n' "$dest" "$src"
 }
 
+# layer <config-path> <include-line>
+#
+# Keep ~/.config/<config-path> as the shipped Omarchy default and have it end by
+# sourcing <include-line> — the pattern for a config whose deltas are recorded
+# in this repo instead of replacing the whole stock file. A symlink standing in
+# the way is stashed and replaced by the default, so the snippet becomes the only
+# source of the deltas; an existing real file is left alone, only appended to.
+layer() {
+  local rel=$1 include=$2 dest="$HOME/.config/$1"
+  local stock="${OMARCHY_PATH:-/usr/share/omarchy}/config/$1"
+
+  if [[ ! -f $stock ]]; then
+    printf 'not a shipped config on this system: %s\n' "$rel" >&2
+    return 1
+  fi
+
+  if [[ -L $dest ]]; then
+    stash "$dest"
+    run mkdir -p "$(dirname "$dest")"
+    run cp "$stock" "$dest"
+    printf 'default %s (replaced the symlink with the Omarchy default)\n' "$dest"
+  elif [[ ! -e $dest ]]; then
+    run mkdir -p "$(dirname "$dest")"
+    run cp "$stock" "$dest"
+    printf 'default %s\n' "$dest"
+  fi
+
+  if grep -qxF -- "$include" "$dest" 2>/dev/null; then
+    printf 'sources %s\n' "$include"
+    return 0
+  fi
+
+  if ((dry_run)); then
+    printf 'would: append "%s" to %s\n' "$include" "$dest"
+  else
+    printf '\n%s\n' "$include" >>"$dest"
+    printf 'append  %s (one line, sources the snippet)\n' "$dest"
+  fi
+}
+
 show_status() {
   local dest
   for dest in "$HOME/.config/omarchy/extensions/omarchy-menu.jsonc" \
     "$HOME/.local/bin/fluxfm" \
     "$HOME/.local/bin/omarun" \
-    "$HOME/.config/hypr/bindings.lua"; do
+    "$HOME/.config/hypr/bindings.lua" \
+    "$HOME/.config/tmux/oma-malleations.conf"; do
     if [[ -L $dest ]]; then
       printf '%-52s -> %s\n' "$dest" "$(readlink "$dest")"
     elif [[ -e $dest ]]; then
@@ -82,6 +131,17 @@ show_status() {
       printf '%-52s (missing)\n' "$dest"
     fi
   done
+
+  local tmux_conf="$HOME/.config/tmux/tmux.conf"
+  if [[ -L $tmux_conf ]]; then
+    printf '%-52s (symlink to another repo: %s)\n' "$tmux_conf" "$(readlink "$tmux_conf")"
+  elif grep -qxF -- "source-file ~/.config/tmux/oma-malleations.conf" "$tmux_conf" 2>/dev/null; then
+    printf '%-52s (Omarchy default + oma-malleations.conf)\n' "$tmux_conf"
+  elif [[ -e $tmux_conf ]]; then
+    printf '%-52s (real file, does not source the snippet)\n' "$tmux_conf"
+  else
+    printf '%-52s (missing)\n' "$tmux_conf"
+  fi
   if [[ -d ${state}/backups ]]; then
     printf '\nbackups in %s:\n' "$state/backups"
     ls -1 "$state/backups"
@@ -98,6 +158,9 @@ link "config/omarchy/extensions/omarchy-menu.jsonc" \
 link "bin/fluxfm" "$HOME/.local/bin/fluxfm"
 link "bin/omarun" "$HOME/.local/bin/omarun"
 link "config/hypr/bindings.lua" "$HOME/.config/hypr/bindings.lua"
+# tmux: the snippet holds only the deltas, the stock file just sources it.
+link "config/tmux/oma-malleations.conf" "$HOME/.config/tmux/oma-malleations.conf"
+layer "tmux/tmux.conf" "source-file ~/.config/tmux/oma-malleations.conf"
 
 if ((!dry_run)); then
   chmod +x "$repo/bin/fluxfm" "$repo/bin/omarun"
@@ -116,5 +179,9 @@ if ((!dry_run)); then
       hyprctl configerrors
     fi
   fi
-  printf '\nDone. SUPER + R runs, SUPER + SHIFT + R runs again.\n'
+  # tmux: source the new config into the running server (no session is killed).
+  if command -v omarchy-restart-tmux >/dev/null 2>&1; then
+    omarchy-restart-tmux >/dev/null 2>&1 || true
+  fi
+  printf '\nDone. SUPER + R runs, SUPER + SHIFT + R runs again, tmux is on CTRL + A.\n'
 fi

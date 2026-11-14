@@ -1,0 +1,22 @@
+[Unit]
+Description=oma-malleations fan control safety guard
+Documentation=file:///usr/local/lib/oma-malleations/fancontrol-root
+# If the guard ever fails, keep retrying; the kernel watchdog is the fallback,
+# not a reason to stop looking after the fan.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/oma-malleations/fancontrol-root guard
+Restart=on-failure
+RestartSec=5s
+# The loop is tiny, but it should not lose the CPU to whatever made it hot.
+Nice=-5
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ReadWritePaths=/run
+
+[Install]
+WantedBy=multi-user.target

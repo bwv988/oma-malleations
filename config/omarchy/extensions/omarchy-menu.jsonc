@@ -51,5 +51,17 @@
   "fluxfm-channels.kompensator": { "icon": "󰎇", "label": "FluxFM FluxKompensator", "action": "fluxfm kompensator" },
   "fluxfm-channels.pop": { "icon": "󰎇", "label": "FluxFM Pop Radio", "action": "fluxfm pop" },
   "fluxfm-channels.kinder": { "icon": "󰎇", "label": "FluxFM Kinder", "action": "fluxfm kinder" },
-  "fluxfm-channels.new-yorker": { "icon": "󰎇", "label": "FluxFM New Yorker Instore", "action": "fluxfm new-yorker" }
+  "fluxfm-channels.new-yorker": { "icon": "󰎇", "label": "FluxFM New Yorker Instore", "action": "fluxfm new-yorker" },
+
+  // ThinkPad fan control. The absolute path keeps these rows from ever running
+  // /usr/bin/fancontrol, which is lm_sensors' different tool.
+  "fan": {
+    "icon": "󰈐",
+    "label": "Fan control",
+    "description": "Manual ThinkPad fan speed · SUPER + CTRL + ALT + + / -"
+  },
+  "fan.up": { "icon": "󰈐", "label": "Fan faster", "description": "Raise the fan, or take manual control at maximum from auto", "action": "/usr/local/bin/fancontrol up" },
+  "fan.down": { "icon": "󰈐", "label": "Fan slower", "description": "Lower the fan, or return to auto at the safe floor", "action": "/usr/local/bin/fancontrol down" },
+  "fan.auto": { "icon": "󰈐", "label": "Fan auto", "description": "Hand the fan back to the embedded controller", "action": "/usr/local/bin/fancontrol auto" },
+  "fan.status": { "icon": "󰈐", "label": "Fan status", "description": "Temperature, level, RPM and guard state", "action": "/usr/local/bin/fancontrol status --osd" }
 }

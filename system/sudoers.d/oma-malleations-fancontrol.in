@@ -1,0 +1,7 @@
+# Managed by ~/Develop/oma-malleations/install.sh.
+# Only the root-owned helper is allowed, and only these three subcommands.
+# It writes level 1..7/auto plus the kernel watchdog to /proc/acpi/ibm/fan.
+@USER@ ALL=(root) NOPASSWD: \
+    /usr/local/lib/oma-malleations/fancontrol-root up, \
+    /usr/local/lib/oma-malleations/fancontrol-root down, \
+    /usr/local/lib/oma-malleations/fancontrol-root auto

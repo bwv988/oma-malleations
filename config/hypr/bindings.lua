@@ -33,3 +33,16 @@
 -- are the reminder bindings, and they are untouched.
 o.bind("SUPER + R", "Run now", "omarun")
 o.bind("SUPER + SHIFT + R", "Run again", "omarun --history")
+
+-- Fan control (~/Develop/oma-malleations, /usr/local/bin/fancontrol). Every
+-- simpler SUPER+modifier+EQUAL/MINUS combination is already Omarchy's window
+-- resize, so the free symmetric +/- pair is SUPER + CTRL + ALT + EQUAL/MINUS.
+-- From auto, + takes manual control at maximum (a guaranteed increase) and -
+-- takes the quietest safe manual level; - at that floor writes auto. SUPER +
+-- CTRL + ALT + 0 hands the fan straight back to the embedded controller.
+-- The absolute path matters: /usr/bin/fancontrol is lm_sensors' tool. The
+-- keybinding must never fall through to it if the oma-malleations copy is
+-- missing; a missing /usr/local/bin/fancontrol is a clean failure instead.
+o.bind("SUPER + CTRL + ALT + EQUAL", "Fan faster", "/usr/local/bin/fancontrol up")
+o.bind("SUPER + CTRL + ALT + MINUS", "Fan slower", "/usr/local/bin/fancontrol down")
+o.bind("SUPER + CTRL + ALT + 0", "Fan auto", "/usr/local/bin/fancontrol auto")

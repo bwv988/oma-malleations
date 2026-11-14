@@ -4,7 +4,10 @@ My Omarchy malleations: the small set of *user-layer* changes that make this
 machine mine, kept in git so `omarchy update` can never quietly eat them.
 
 Named after Omarchy's own sales pitch — a malleable OS. Everything here lives in
-`~/.config/` or `~/.local/bin/`, nothing in `/usr/share/omarchy/`.
+`~/.config/` or `~/.local/bin/`, nothing in `/usr/share/omarchy/`. The one
+exception is fan control: it needs root, so `install.sh` installs a small
+root-owned helper, a systemd guard, a `fan_control=1` module option and a
+three-command NOPASSWD rule under `/usr/local/` and `/etc/`.
 
 ## What's in here
 
@@ -12,17 +15,21 @@ Named after Omarchy's own sales pitch — a malleable OS. Everything here lives 
 |---|---|---|
 | `bin/fluxfm` | `~/.local/bin/fluxfm` | Plays FluxFM (Berlin) channels in `cliamp`, the TUI player Omarchy ships |
 | `bin/omarun` | `~/.local/bin/omarun` | Windows+R "run now" box: `SUPER + R`, type a command, it runs detached and the box closes |
-| `config/hypr/bindings.lua` | `~/.config/hypr/bindings.lua` | `SUPER + R` → Run now, `SUPER + SHIFT + R` → Run again (neither key was bound) |
-| `config/omarchy/extensions/omarchy-menu.jsonc` | `~/.config/omarchy/extensions/omarchy-menu.jsonc` | `SUPER + SPACE` → **Run now**, **Run again**, **FluxFM** (one Enter) and **FluxFM Channels** (15 stations) |
+| `bin/fancontrol` | `/usr/local/bin/fancontrol` | ThinkPad fan speed from `SUPER + CTRL + ALT + EQUAL` / `MINUS`, with a temperature floor and auto fallback |
+| `bin/fancontrol-root` | `/usr/local/lib/oma-malleations/fancontrol-root` | Root half: the only thing allowed to write `/proc/acpi/ibm/fan` |
+| `config/hypr/bindings.lua` | `~/.config/hypr/bindings.lua` | `SUPER + R` → Run now, `SUPER + SHIFT + R` → Run again, and the fan keys |
+| `config/omarchy/extensions/omarchy-menu.jsonc` | `~/.config/omarchy/extensions/omarchy-menu.jsonc` | `SUPER + SPACE` → **Run now**, **Run again**, **FluxFM** (one Enter), **FluxFM Channels** (15 stations) and **Fan control** |
 | `config/tmux/oma-malleations.conf` | `~/.config/tmux/oma-malleations.conf` | My tmux deltas over the Omarchy default: `Ctrl+a` prefix, `Shift+arrow` window switching |
-| `install.sh` | – | Idempotent symlink installer with backups; layers the tmux deltas onto the stock file |
+| `system/` | `/etc/systemd/system/`, `/etc/modprobe.d/`, `/etc/sudoers.d/` | Guard unit, `fan_control=1` module option, NOPASSWD rule for the three fan commands (copied as root, never symlinked) |
+| `install.sh` | – | Idempotent symlink installer with backups; layers the tmux deltas onto the stock file and installs the fan-control root bits |
 
 Menu icons are Material Design glyphs from the Nerd Font the bar resolves
 (`fontFamily: monospace` → JetBrainsMono Nerd Font): `md-radio` U+F0439 on
 **FluxFM**, `md-radio_tower` U+F043B on **FluxFM Channels**, `md-music_note`
 U+F0387 on each channel, `md-run_fast` U+F046E on **Run now**, `md-history`
-U+F02DA on **Run again**. Checked with `fc-list ':charset=f0439'` and the font's
-own glyph names — not guessed, so no tofu boxes.
+U+F02DA on **Run again**, and `md-fan` U+F0210 on the **Fan control** rows.
+Checked with `fc-list ':charset=f0439'`, `fc-list ':charset=f0210'` and the
+font's own glyph names — not guessed, so no tofu boxes.
 
 ### tmux
 
@@ -109,6 +116,111 @@ History is `~/.local/state/omarun/history`: last 200 commands, newest last,
 earlier duplicates dropped. Entries holding a literal tab are kept but not
 offered in the picker (tab is the menu's own field separator).
 
+### Fan control
+
+A ThinkPad-specific tool that takes manual control of the fan from the keyboard,
+while keeping a temperature floor. It is not `fancontrol` from lm_sensors; that
+one is still at `/usr/bin/fancontrol`, and its disabled unit uses
+`/usr/sbin/fancontrol`.
+
+```bash
+fancontrol up      # one level up; from auto, take manual control at maximum
+fancontrol down    # one level down; at the floor, write auto
+fancontrol auto    # hand the fan back to the embedded controller
+fancontrol status  # temperature, level, RPM, guard state
+```
+
+| Key | Action |
+|---|---|
+| `SUPER + CTRL + ALT + EQUAL` | Fan faster |
+| `SUPER + CTRL + ALT + MINUS` | Fan slower |
+| `SUPER + CTRL + ALT + 0` | Fan auto |
+
+Every simpler `SUPER + <modifier> + EQUAL/MINUS` combination is already
+Omarchy's window resize (`SUPER + MINUS` etc.). `SUPER + CTRL + ALT +
+EQUAL/MINUS/0` was free, symmetric, and the `=`/`-` keys are the `+`/`-` pair
+without forcing a fourth modifier. Checked with
+`omarchy menu keybindings --print` before binding them.
+
+**How it behaves.** Firmware levels are 1–7; `0` (fan stopped) and `full-speed`
+(disengaged) are deliberately not exposed. `auto` is the firmware's own curve.
+The manual floor comes from the hottest of the `coretemp`, `thinkpad`, `acpitz`
+and `nvme` hwmon temperature inputs:
+
+| Hottest sensor | Manual floor |
+|---|---|
+| < 50 °C | 1 |
+| 50–59 °C | 2 |
+| 60–67 °C | 3 |
+| 68–72 °C | 4 |
+| 73–76 °C | 5 |
+| 77–79 °C | 6 |
+| ≥ 80 °C | 7 |
+
+An NVMe-only reading is not enough: at least one CPU/board sensor must be
+readable, otherwise manual control is refused rather than run blind.
+
+- `up` from `auto`: level 7. The EC does not expose its current auto level, so
+  only 7 is guaranteed not to be a *decrease*. From a manual level, `up` is one
+  step, clamped to the floor and to 7.
+- `down` from `auto`: the floor for the current temperature (the quietest safe
+  manual level). If the fan is already stopped, it stays auto. From a manual
+  level, `down` is one step; if that would go below the floor, it writes `auto`.
+  So `-` at the floor always gives the EC back the fan.
+- `auto` writes `level auto` and disables the kernel watchdog.
+- At ≥95 °C every command (and the guard) forces `auto`, letting the EC take
+  over rather than trusting a manual level.
+
+**The guard.** `fancontrol-guard.service` is a root systemd service started on
+demand by `fancontrol-root`. Every 5 s it reads the same sensors; it raises the
+level if it is below the floor, re-arms the kernel fan watchdog (30 s) on every
+manual tick, and at ≥95 °C writes `auto`. When the fan has been in auto for 30 s
+it exits, so there is no permanent daemon while idle. If the guard dies, the kernel's own
+fan watchdog returns the fan to auto within 30 s. `journalctl -u fancontrol-guard`
+has the raises.
+
+**What runs as root, and why.** `/proc/acpi/ibm/fan` is root-owned and
+`fan_control` is off by default. `install.sh` (with a sudo prompt; never run
+`./install.sh` itself with sudo) installs:
+
+| Path | Why |
+|---|---|
+| `/usr/local/bin/fancontrol` | The user-facing CLI, as a root-owned copy, so `sudo fancontrol` can never execute a user-writable file. |
+| `/usr/local/lib/oma-malleations/fancontrol-root` | The only program that writes the fan. The sudoers rule lets it run only `up`, `down` and `auto`; it writes only `level 1..7`, `level auto` and `watchdog <n>`. |
+| `/etc/systemd/system/fancontrol-guard.service` | The 5 s temperature guard, started on demand. |
+| `/etc/modprobe.d/oma-malleations-fancontrol.conf` | `options thinkpad_acpi fan_control=1`; the driver disables manual fan control by default. |
+| `/etc/sudoers.d/oma-malleations-fancontrol` | NOPASSWD for exactly the three helper subcommands, so the keybinding never prompts. |
+
+The sudoers rule names the root-owned helper path, never the repo; the helper is
+copied, not symlinked. The installed CLI also ignores `FANCONTROL_HELPER` when
+run as root. Re-running `./install.sh` is idempotent.
+
+**Enabling it.** `install.sh` writes the modprobe option and, when run in a
+terminal, offers to reload `thinkpad_acpi` immediately. If you decline (or run
+non-interactively), a reboot or:
+
+```bash
+sudo modprobe -r thinkpad_acpi && sudo modprobe thinkpad_acpi
+```
+
+is needed. Until then `fancontrol status` shows `fan_control=N` and `up`/`down`
+answer with a notification explaining the fix. `fancontrol --dry-run up` shows
+the writes without touching anything.
+
+**Name collision.** `/usr/local/bin` is ahead of `/usr/bin`, so `fancontrol`
+means this tool. The lm_sensors tool is still `/usr/bin/fancontrol` (and
+`/usr/sbin/fancontrol`, which its disabled unit uses). If a script expects that
+one, call it by absolute path; if a shell cached the old path, `hash -r`. The
+keybindings and menu rows pin `/usr/local/bin/fancontrol` so a missing install
+cannot fall through to the lm_sensors tool.
+
+**Why the curve looks like that.** The X1 Carbon Gen 9 reference
+`luisgerhorst/fancontrol-tpx1c9` maps PWM 35 ≈ 4500 RPM and 255 ≈ 8000 RPM, and
+its quiet curve is much lower than the EC's aggressive auto at 48 °C (≈ 5500 RPM
+here). The table above is a manual *floor*, not a target: it lets `-` get below
+auto at normal temperatures, while the guard raises the level if the temperature
+actually climbs. The kernel watchdog is the backstop.
+
 ### FluxFM usage
 
 ```bash
@@ -130,18 +242,25 @@ fluxfm --sync-playlist  # rewrite the all-channels playlist for the cliamp TUI
 ```bash
 cd ~/Develop/oma-malleations
 ./install.sh --dry-run   # see what it would touch
-./install.sh             # link, cliamp playlist, reload menu + Hyprland + tmux
-./install.sh status      # what is linked, what backups exist
+./install.sh             # link, install fan root bits, reload menu + Hyprland + tmux
+./install.sh --user-only # skip the root-owned fan-control pieces
+./install.sh status      # what is linked, what backups and root bits exist
 ```
+
+Run it as your user, not with `sudo`; it asks for sudo itself when installing
+the root-owned fan-control pieces.
 
 Real files in the way are moved to
 `~/.local/state/oma-malleations/backups/<timestamp>/`, so a first install
 preserves whatever you had in `omarchy-menu.jsonc` or `bindings.lua` — and the
 symlink that used to be `~/.config/tmux/tmux.conf`. Nothing is deleted.
 
-After linking, `install.sh` reloads the menu, runs `hyprctl reload` and prints
-`hyprctl configerrors` if Hyprland complained about the bindings, then sources
-the tmux config into the running server.
+After linking and installing the fan-control pieces (unless `--user-only`),
+`install.sh` reloads the menu, runs `hyprctl reload` and prints `hyprctl
+configerrors` if Hyprland complained about the bindings, then sources the tmux
+config into the running server. It also offers to reload `thinkpad_acpi` so the
+`fan_control=1` option takes effect without a reboot; see [Fan
+control](#fan-control).
 
 A **symlink** in the way is moved aside and never written through, so installing
 from this repo can't modify a file that belongs to another checkout — and neither
@@ -157,9 +276,10 @@ track the second kind.
 
 Three common patterns:
 
-1. **Symlink farm** (what this repo does). Repo layout mirrors `$HOME`; a small
-   installer links each file into place. Edits in `~/.config/` are edits in the
-   repo — `git status` always shows the truth, no copy step to forget.
+1. **Symlink farm** (what this repo does, except the root-owned fan bits). Repo
+   layout mirrors `$HOME`; a small installer links each file into place. Edits
+   in `~/.config/` are edits in the repo — `git status` always shows the truth,
+   no copy step to forget.
 2. **`stow` / `chezmoi` / `yadm`.** Same idea, a mature tool on top: stow gives
    you per-package symlink trees, chezmoi adds templating and per-machine
    differences (`{{ .chezmoi.hostname }}`), yadm is "git on `$HOME`" with
@@ -192,15 +312,34 @@ Omarchy-specific notes that matter more than the tooling:
 
 ## Adding a new malleation
 
-1. Put the file in the repo under `config/...` or `bin/...` (mirror the real path).
+1. Put the file in the repo under `config/...` or `bin/...` (mirror the real
+   path). A root-owned file goes under `system/...` instead.
 2. Add a `link` line in `install.sh` — or a `layer` line, if the file is a
-   snippet that a stock config should `source` instead of replacing it.
+   snippet that a stock config should `source` instead of replacing it. A
+   `system/...` file gets an `install` line (a root-owned copy, never a symlink,
+   so a user-writable repo can never become root code).
 3. `./install.sh`, commit.
 
 Verified sources used while building this:
 
 - `omarchy menu --help`, `/usr/share/omarchy/shell/plugins/menu/Menu.qml`
   (`action` rows run through `bash -lc`, dotted ids imply parent submenus).
+- `/proc/acpi/ibm/fan` (`status`, `speed`, `level`), the hwmon `coretemp`,
+  `thinkpad`, `acpitz` and `nvme` temperature inputs, and
+  `/sys/module/thinkpad_acpi/parameters/fan_control`.
+- The kernel `thinkpad-acpi` documentation, fan section: `fan_control=1` is off
+  by default, levels are 0–7 plus `auto`/`full-speed`, and the driver's fan
+  safety watchdog reverts to a safe setting if userspace stops refreshing it
+  (configurable up to 120 s; this tool uses 30 s).
+- `omarchy osd` and `/usr/share/omarchy/shell/plugins/osd/OsdModel.js`
+  (`iconFor` passes an unknown icon name through as a glyph; `-i` with U+F0210
+  `md-fan` is the fan icon).
+- `omarchy menu keybindings --print` for the free `SUPER + CTRL + ALT +
+  EQUAL/MINUS/0` pair; every simpler `SUPER + <modifier> + EQUAL/MINUS` is a
+  window-resize binding.
+- `luisgerhorst/fancontrol-tpx1c9` (X1 Carbon Gen 9) for the PWM/RPM sanity
+  check: PWM 35 ≈ 4500 RPM, 255 ≈ 8000 RPM. The tool here uses firmware levels,
+  not PWM; the reference only informs the conservative floor.
 - `/usr/share/omarchy/default/hypr/bindings/applications.lua` (cliamp is
   preinstalled and bound to `SUPER + SHIFT + ALT + M`).
 - `cliamp --help`, `cliamp open --help` (`cliamp://play?url=…` plays over IPC or

@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+# fancontrol - temperature-aware ThinkPad fan control for Omarchy.
+#
+# Installed root-owned at /usr/local/bin/fancontrol, so it wins over
+# /usr/bin/fancontrol from lm_sensors. The privileged half is
+# /usr/local/lib/oma-malleations/fancontrol-root; the sudoers rule allows
+# exactly `up`, `down` and `auto` without a password.
+#
+#   fancontrol up      raise, or take manual control at maximum from auto
+#   fancontrol down    lower, or write auto when below the safe floor
+#   fancontrol auto    hand the fan back to the embedded controller
+#   fancontrol status  temperature, level, RPM and guard state
+#
+# Options: --quiet, --dry-run, --osd (status only), --help.
+
+set -euo pipefail
+
+# FANCONTROL_HELPER is a development convenience. Ignore it when running as
+# root, so `sudo FANCONTROL_HELPER=/tmp/... fancontrol` cannot choose the root
+# helper by environment.
+if [[ -n ${FANCONTROL_HELPER:-} && $EUID -ne 0 ]]; then
+  HELPER=$FANCONTROL_HELPER
+else
+  HELPER=/usr/local/lib/oma-malleations/fancontrol-root
+fi
+FAN_ICON=$'\uf0210' # md-fan, U+F0210
+quiet=0
+dry_run=0
+osd=0
+cmd=
+
+usage() {
+  cat <<'EOF'
+usage: fancontrol [--quiet] [--dry-run] up|down|auto|status [--osd]
+
+  up      raise the fan one level; from auto, take manual control at maximum
+  down    lower the fan one level; below the temperature floor it writes auto
+  auto    hand the fan back to the embedded controller
+  status  show temperature, level, RPM and guard state
+
+  --quiet    no OSD
+  --dry-run  show the writes without performing them
+  --osd      show an OSD for status (up/down/auto already do)
+
+keybindings:
+  SUPER + CTRL + ALT + EQUAL   fan faster
+  SUPER + CTRL + ALT + MINUS   fan slower
+  SUPER + CTRL + ALT + 0       fan auto
+EOF
+}
+
+show_message() {
+  local msg=$1
+  if (( quiet )); then
+    return 0
+  fi
+  if command -v omarchy >/dev/null 2>&1 && [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
+    if omarchy osd -i "$FAN_ICON" -m "$msg" -d 1400 >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  if command -v notify-send >/dev/null 2>&1 &&
+    [[ -n ${WAYLAND_DISPLAY:-}${DISPLAY:-} ]]; then
+    if notify-send "Fan control" "$msg" >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  printf '%s\n' "$msg"
+}
+
+show_error() {
+  local msg=$1
+  if (( quiet )); then
+    printf 'fancontrol: %s\n' "$msg" >&2
+    return 0
+  fi
+  if command -v omarchy >/dev/null 2>&1 && [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
+    if omarchy notification send -u normal -g "$FAN_ICON" \
+      "Fan control" "$msg" -t 10000 >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  if command -v notify-send >/dev/null 2>&1 &&
+    [[ -n ${WAYLAND_DISPLAY:-}${DISPLAY:-} ]]; then
+    if notify-send "Fan control" "$msg" >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  printf 'fancontrol: %s\n' "$msg" >&2
+}
+
+helper_available() {
+  if [[ ! -x $HELPER ]]; then
+    show_error "root helper missing at $HELPER. Run ./install.sh from ~/Develop/oma-malleations."
+    return 1
+  fi
+}
+
+declare -A status=()
+
+read_status() {
+  local out k v
+  if ! out=$("$HELPER" status 2>&1); then
+    show_error "$out"
+    return 1
+  fi
+  status=()
+  while IFS='=' read -r k v; do
+    if [[ -n $k ]]; then
+      status["$k"]=$v
+    fi
+  done <<<"$out"
+}
+
+status_message() {
+  local level=${status[level]:-unknown}
+  local temp=${status[temp]:-?}
+  local fc=${status[fan_control]:-?}
+  if [[ $fc != Y ]]; then
+    printf 'Fan control disabled · fan_control=%s' "$fc"
+  elif [[ $level == auto ]]; then
+    printf 'Fan auto · %s°C' "$temp"
+  elif [[ $level =~ ^[0-9]+$ ]]; then
+    printf 'Fan %s/7 · %s°C' "$level" "$temp"
+  else
+    printf 'Fan %s · %s°C' "$level" "$temp"
+  fi
+}
+
+print_status() {
+  local level=${status[level]:-unknown}
+  local temp=${status[temp]:-?}
+  local req=${status[required]:-?}
+  local fan=${status[fan]:-?}
+  local guard=${status[guard]:-?}
+  local fc=${status[fan_control]:-?}
+  local enabled=${status[enabled]:-?}
+
+  if [[ $level =~ ^[0-9]+$ ]]; then
+    printf 'mode:    manual %s/7\n' "$level"
+  else
+    printf 'mode:    %s\n' "$level"
+  fi
+  printf 'temp:    %s°C (required level %s)\n' "$temp" "$req"
+  printf 'fan:     %s RPM (%s)\n' "$fan" "$enabled"
+  printf 'guard:   %s\n' "$guard"
+  printf 'driver:  fan_control=%s\n' "$fc"
+
+  if [[ $fc != Y ]]; then
+    printf '\nmanual control is disabled. Enable fan_control=1 (install.sh does this),\n'
+    printf 'then reboot or: sudo modprobe -r thinkpad_acpi && sudo modprobe thinkpad_acpi\n'
+  elif [[ $level =~ ^[0-9]+$ && $guard != active ]]; then
+    printf '\nwarning: manual level without the guard; the kernel watchdog will return to auto.\n'
+  fi
+}
+
+run_helper_write() {
+  local cmd=$1 out
+  if (( dry_run )); then
+    if ! out=$("$HELPER" --dry-run "$cmd" 2>&1); then
+      show_error "$out"
+      return 1
+    fi
+    printf '%s\n' "$out"
+    return 0
+  fi
+
+  if (( EUID == 0 )); then
+    if ! out=$("$HELPER" "$cmd" 2>&1); then
+      show_error "$out"
+      return 1
+    fi
+  else
+    if ! out=$(sudo -n "$HELPER" "$cmd" 2>&1); then
+      if [[ $out == *"password is required"* ]]; then
+        out+=$'\n\nRun ./install.sh from ~/Develop/oma-malleations to install the NOPASSWD rule.'
+      fi
+      show_error "$out"
+      return 1
+    fi
+  fi
+
+  # The write succeeded; anything on stderr is a warning (for example the
+  # guard could not start). Show it without pretending the fan change failed.
+  if [[ -n $out ]]; then
+    show_error "$out"
+  fi
+}
+
+for arg in "$@"; do
+  case $arg in
+    up | down | auto | status)
+      if [[ -n $cmd ]]; then
+        usage >&2
+        exit 2
+      fi
+      cmd=$arg
+      ;;
+    --quiet | -q) quiet=1 ;;
+    --dry-run | -n) dry_run=1 ;;
+    --osd) osd=1 ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      printf 'fancontrol: unknown argument %q\n' "$arg" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z $cmd ]]; then
+  usage >&2
+  exit 2
+fi
+
+helper_available || exit 1
+
+if [[ $cmd == status ]]; then
+  if (( dry_run )); then
+    "$HELPER" --dry-run status
+    exit $?
+  fi
+  read_status || exit 1
+  if (( osd )); then
+    show_message "$(status_message)"
+  else
+    print_status
+  fi
+  exit 0
+fi
+
+run_helper_write "$cmd" || exit 1
+read_status || exit 1
+show_message "$(status_message)"

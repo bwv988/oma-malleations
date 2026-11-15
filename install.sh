@@ -156,6 +156,33 @@ show_installed() {
   fi
 }
 
+# rebuild_initramfs: bake /etc/modprobe.d into the initramfs.
+#
+# A reboot alone does not pick up a new `options thinkpad_acpi ...` line on this
+# system: the preset builds with `-S autodetect`, so the initramfs carries every
+# module and udev starts thinkpad_acpi from inside it (a few ms after /init,
+# before the root filesystem is unlocked). The initramfs also carries its own
+# snapshot of /etc/modprobe.d, taken at build time, so the option only exists at
+# boot if the initramfs is rebuilt after the file is written.
+rebuild_initramfs() {
+  local cmd
+  if command -v limine-mkinitcpio >/dev/null 2>&1; then
+    cmd=(limine-mkinitcpio)
+  elif command -v mkinitcpio >/dev/null 2>&1; then
+    cmd=(mkinitcpio -P)
+  else
+    printf 'could not find mkinitcpio; rebuild the initramfs by hand so that\n' >&2
+    printf 'fan_control=1 is inside it, then reboot.\n' >&2
+    return 1
+  fi
+  printf '\nthinkpad_acpi starts from the initramfs, so the option has to be in it.\n'
+  printf 'Rebuilding the initramfs (%s) ...\n' "${cmd[*]}"
+  sudo_run "${cmd[@]}" || {
+    printf 'initramfs rebuild failed; fan_control=1 will not apply at boot\n' >&2
+    return 1
+  }
+}
+
 # The fan-control pieces that must be root-owned. The user-facing command is a
 # copy, not a symlink, so `sudo fancontrol` can never execute user-writable code.
 install_fancontrol_system() {
@@ -217,10 +244,13 @@ install_fancontrol_system() {
 
   if [[ $fan_control != Y ]]; then
     printf '\nthinkpad_acpi is loaded with fan_control=%s.\n' "$fan_control"
+    rebuild_initramfs || true
     if ((dry_run)); then
-      printf 'The module option would be installed; it takes effect after a reboot, or now with:\n'
+      printf '\nThe module option would be inside the rebuilt initramfs; it would take\n'
+      printf 'effect after a reboot, or now with:\n'
     else
-      printf 'The module option is installed; it takes effect after a reboot, or now with:\n'
+      printf '\nThe module option is inside the initramfs now, so it takes effect after a\n'
+      printf 'reboot. Until then, the running module can be reloaded by hand with:\n'
     fi
     printf '  sudo modprobe -r thinkpad_acpi && sudo modprobe thinkpad_acpi\n'
     if ((dry_run)); then
@@ -235,7 +265,7 @@ install_fancontrol_system() {
               fan_control=$(</sys/module/thinkpad_acpi/parameters/fan_control)
             fi
             if [[ $fan_control == Y ]]; then
-              printf 'reloaded thinkpad_acpi; fan_control=1\n'
+              printf 'reloaded thinkpad_acpi; fan_control=1 (the initramfs keeps it after a reboot)\n'
             else
               printf 'reloaded, but fan_control is still %s; reboot instead\n' "$fan_control" >&2
             fi
@@ -255,6 +285,7 @@ show_status() {
   for dest in "$HOME/.config/omarchy/extensions/omarchy-menu.jsonc" \
     "$HOME/.local/bin/fluxfm" \
     "$HOME/.local/bin/omarun" \
+    "$HOME/.local/bin/winapp" \
     "$HOME/.config/hypr/bindings.lua" \
     "$HOME/.config/tmux/oma-malleations.conf"; do
     if [[ -L $dest ]]; then
@@ -311,6 +342,7 @@ link "config/omarchy/extensions/omarchy-menu.jsonc" \
   "$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
 link "bin/fluxfm" "$HOME/.local/bin/fluxfm"
 link "bin/omarun" "$HOME/.local/bin/omarun"
+link "bin/winapp" "$HOME/.local/bin/winapp"
 link "config/hypr/bindings.lua" "$HOME/.config/hypr/bindings.lua"
 # tmux: the snippet holds only the deltas, the stock file just sources it.
 link "config/tmux/oma-malleations.conf" "$HOME/.config/tmux/oma-malleations.conf"
@@ -327,7 +359,8 @@ else
 fi
 
 if ((!dry_run)); then
-  chmod +x "$repo/bin/fluxfm" "$repo/bin/omarun" "$repo/bin/fancontrol" "$repo/bin/fancontrol-root"
+  chmod +x "$repo/bin/fluxfm" "$repo/bin/omarun" "$repo/bin/winapp" \
+    "$repo/bin/fancontrol" "$repo/bin/fancontrol-root"
   # All-channels playlist, visible inside cliamp under Local Playlists.
   "$repo/bin/fluxfm" --sync-playlist
   # Re-read the JSONC extensions without restarting the bar.

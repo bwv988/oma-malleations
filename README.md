@@ -15,6 +15,7 @@ three-command NOPASSWD rule under `/usr/local/` and `/etc/`.
 |---|---|---|
 | `bin/fluxfm` | `~/.local/bin/fluxfm` | Plays FluxFM (Berlin) channels in `cliamp`, the TUI player Omarchy ships |
 | `bin/omarun` | `~/.local/bin/omarun` | Windows+R "run now" box: `SUPER + R`, type a command, it runs detached and the box closes |
+| `bin/winapp` | `~/.local/bin/winapp` | Runs any Windows `.exe` on Proton through `umu-run` + GE-Proton, one prefix per app — no wine needed |
 | `bin/fancontrol` | `/usr/local/bin/fancontrol` | ThinkPad fan speed from `SUPER + CTRL + ALT + EQUAL` / `MINUS`, with a temperature floor and auto fallback |
 | `bin/fancontrol-root` | `/usr/local/lib/oma-malleations/fancontrol-root` | Root half: the only thing allowed to write `/proc/acpi/ibm/fan` |
 | `config/hypr/bindings.lua` | `~/.config/hypr/bindings.lua` | `SUPER + R` → Run now, `SUPER + SHIFT + R` → Run again, and the fan keys |
@@ -116,6 +117,73 @@ History is `~/.local/state/omarun/history`: last 200 commands, newest last,
 earlier duplicates dropped. Entries holding a literal tab are kept but not
 offered in the picker (tab is the menu's own field separator).
 
+### Windows apps (Proton, no wine)
+
+There is no `wine` on this machine, and none is needed. `umu-launcher` — the
+`umu-run` package — is the supported way to run Proton outside Steam, and
+Omarchy's gaming setup already left everything else in place:
+
+| Piece | Where |
+|---|---|
+| `umu-run` | `/usr/bin/umu-run`, umu-launcher 1.4.4 |
+| GE-Proton | `~/.local/share/Steam/compatibilitytools.d/GE-Proton11-12-x86_64` |
+| Steam Linux Runtime 4 | `~/.local/share/umu/steamrt4` (cached, so this works offline) |
+
+`omarchy-launch-battlenet` is the same four environment variables; `winapp` is
+that recipe for any executable, plus one prefix per app name:
+
+```bash
+winapp <app-name> <exe> [args...]
+winapp --list                     # prefixes that exist
+winapp --prefix <app-name>        # where one lives
+
+winapp solitaire ~/Games/MS_Solitaire_Windows_XP/sol.exe
+winapp notepad 'C:\windows\notepad.exe'
+MANGOHUD=1 winapp solitaire ~/Games/MS_Solitaire_Windows_XP/sol.exe
+```
+
+| Env | Default | Why |
+|---|---|---|
+| `WINEPREFIX` | `~/Games/<app-name>` | same place Omarchy's own game installers use; one per app so registries cannot collide |
+| `PROTONPATH` | `GE-Proton` | the build above, resolved by name |
+| `GAMEID` | `umu-<app-name>` | per-app fixes; an anti-cheat title wants its real id from umu's database |
+| `PROTON_VERB` | `run` | — |
+
+To install an app rather than run a portable one, point it at the installer and
+then at what the installer produced, under the same app name:
+
+```bash
+winapp mysol ~/Downloads/setup.exe              # once
+winapp mysol 'C:\Program Files\MySol\sol.exe'  # from then on
+```
+
+**Worth knowing:**
+
+- **First launch of a new app name takes about a minute** while the prefix is
+  built. Everything after that is immediate. A half-built prefix is left in
+  place if the first run fails; `rm -rf ~/Games/<app-name>` starts over.
+- **DPI is matched to the monitor.** `envs.lua` sets
+  `xwayland:force_zero_scaling`, so wine windows are not scaled by the
+  compositor and wine has to be told its DPI via `LogPixels` — which it reads
+  once at startup. `winapp` writes the focused monitor's scale into the prefix
+  before launching, skipping the write while a `wineserver` for that prefix is
+  alive (it would be ignored, and rewritten on exit). Same reasoning as
+  `omarchy-launch-battlenet`. Consequence: the **first** run of a brand-new
+  prefix is still at 96 DPI, because there is no `user.reg` to write yet.
+- **`~/Games/mi2` and `~/Games/IndianaJonesFateOfAtlantis` are not Windows
+  apps** — they are ScummVM game data (`Atlantis` has no `.EXE` at all).
+  `MONKEY2.EXE` is a DOS binary: Proton will launch it and it will still want
+  DOSBox.
+- **Checked end to end**, not just assumed: `sol.exe` from
+  `~/Games/MS_Solitaire_Windows_XP` opened a "Solitaire" window under
+  GE-Proton, with umu reporting `GE-Proton is up to date` and `steamrt4 is up
+  to date` (so nothing was downloaded). The throwaway prefix was removed
+  afterwards.
+
+A launcher entry is the same thing as the existing ones — copy
+`~/.local/share/applications/battlenet.desktop` and point `Exec=` at
+`winapp <app-name> <exe>`.
+
 ### Fan control
 
 A ThinkPad-specific tool that takes manual control of the fan from the keyboard,
@@ -195,15 +263,30 @@ The sudoers rule names the root-owned helper path, never the repo; the helper is
 copied, not symlinked. The installed CLI also ignores `FANCONTROL_HELPER` when
 run as root. Re-running `./install.sh` is idempotent.
 
-**Enabling it.** `install.sh` writes the modprobe option and, when run in a
-terminal, offers to reload `thinkpad_acpi` immediately. If you decline (or run
-non-interactively), a reboot or:
+**Enabling it.** `install.sh` writes the modprobe option, **rebuilds the
+initramfs**, and, when run in a terminal, offers to reload `thinkpad_acpi`
+immediately so the fan works before the next reboot.
+
+A reboot alone is not enough on this machine. The Omarchy preset builds with
+`-S autodetect`, so the initramfs carries every module and udev starts
+`thinkpad_acpi` from *inside* the initramfs: its `thinkpad_acpi:` lines land
+about 2 ms after `Run /init as init process`, well before the root filesystem
+is unlocked. The `modconf` hook copies `/etc/modprobe.d/*.conf` into that
+initramfs as a snapshot, so a newly written option only reaches the driver if
+the initramfs is regenerated afterwards. If a reboot brings back
+`fan_control=N`, rebuild it and reboot again:
+
+```bash
+sudo limine-mkinitcpio     # or: sudo mkinitcpio -P
+```
+
+Without a reboot (works until the next boot, which is why the initramfs matters):
 
 ```bash
 sudo modprobe -r thinkpad_acpi && sudo modprobe thinkpad_acpi
 ```
 
-is needed. Until then `fancontrol status` shows `fan_control=N` and `up`/`down`
+While `fan_control=N`, `fancontrol status` shows `fan_control=N` and `up`/`down`
 answer with a notification explaining the fix. `fancontrol --dry-run up` shows
 the writes without touching anything.
 
@@ -258,8 +341,9 @@ symlink that used to be `~/.config/tmux/tmux.conf`. Nothing is deleted.
 After linking and installing the fan-control pieces (unless `--user-only`),
 `install.sh` reloads the menu, runs `hyprctl reload` and prints `hyprctl
 configerrors` if Hyprland complained about the bindings, then sources the tmux
-config into the running server. It also offers to reload `thinkpad_acpi` so the
-`fan_control=1` option takes effect without a reboot; see [Fan
+config into the running server. It also rebuilds the initramfs (so
+`fan_control=1` is in the image the boot loader starts) and offers to reload
+`thinkpad_acpi`, so the option takes effect without a reboot at all; see [Fan
 control](#fan-control).
 
 A **symlink** in the way is moved aside and never written through, so installing

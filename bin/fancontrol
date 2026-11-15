@@ -149,6 +149,9 @@ print_status() {
   if [[ $fc != Y ]]; then
     printf '\nmanual control is disabled. Enable fan_control=1 (install.sh does this),\n'
     printf 'then reboot or: sudo modprobe -r thinkpad_acpi && sudo modprobe thinkpad_acpi\n'
+    printf 'thinkpad_acpi starts before the root filesystem is mounted, so the option\n'
+    printf 'must also be inside the initramfs: rerun ./install.sh, which rebuilds it,\n'
+    printf 'or run: sudo limine-mkinitcpio\n'
   elif [[ $level =~ ^[0-9]+$ && $guard != active ]]; then
     printf '\nwarning: manual level without the guard; the kernel watchdog will return to auto.\n'
   fi

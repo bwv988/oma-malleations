@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# winapp - run a Windows app on Proton, without wine
+#
+# Tracked in ~/Develop/oma-malleations. Installed as ~/.local/bin/winapp.
+#
+#   winapp <app-name> <exe> [args...]
+#   winapp --list
+#   winapp --prefix <app-name>
+#
+# There is no wine on this machine and none is needed: umu-launcher (the
+# umu-run package) is the supported way to run Proton outside Steam, and the
+# GE-Proton build plus its Steam Runtime are already installed by Omarchy's
+# gaming setup. So this is a thin wrapper that supplies the four variables umu
+# wants, matches wine's DPI to the monitor, and passes MANGOHUD through:
+#
+#   WINEPREFIX   one per app name, ~/Games/<app-name>, created on first launch
+#   PROTONPATH   GE-Proton, resolved from ~/.local/share/Steam/compatibilitytools.d
+#   GAMEID       umu-<app-name>, so the prefix and any Proton fixes are per-app
+#   PROTON_VERB  run
+#   LogPixels    matched to the focused monitor's scale (Hyprland runs XWayland
+#                apps unscaled here, so wine has to be told; see below)
+#   MANGOHUD=1   passed through when set, as in omarchy-launch-battlenet
+#
+# The exe is a unix path (must exist) or a C:\ path resolved inside the prefix,
+# which is how an app installed by a previous run is started again:
+#
+#   winapp mysol ~/Downloads/setup.exe            # once, to install
+#   winapp mysol 'C:\Program Files\MySol\sol.exe' # from then on
+#
+# Nothing is downloaded: umu reports "GE-Proton is up to date" and "steamrt4 is
+# up to date" from the local cache, so this works offline.
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: winapp <app-name> <exe> [args...]
+       winapp --list
+       winapp --prefix <app-name>
+
+  app-name   Short name for the app. The wine prefix is ~/Games/<app-name>:
+             created on first launch (about a minute), reused after that.
+             Keep one app per name so their registries cannot collide.
+  exe        A unix path, or a C:\ path inside the prefix.
+
+Examples:
+  winapp solitaire ~/Games/MS_Solitaire_Windows_XP/sol.exe
+  winapp notepad 'C:\windows\notepad.exe'
+  winapp mysol ~/Downloads/setup.exe          # install
+  winapp mysol 'C:\Program Files\MySol\sol.exe'  # then run what it installed
+
+Environment overrides:
+  PROTONPATH     Proton build to use (default: GE-Proton)
+  WINEPREFIX     prefix directory (default: ~/Games/<app-name>)
+  GAMEID         umu game id (default: umu-<app-name>)
+  MANGOHUD=1     enable the MangoHud overlay, as omarchy-launch-battlenet does
+  WINAPP_NO_DPI=1
+                 do not touch LogPixels (leave the prefix's DPI alone)
+
+Exit status is umu's. A failed first launch leaves the half-built prefix in
+place; delete ~/Games/<app-name> to start over.
+EOF
+}
+
+die() {
+  printf 'winapp: %s\n' "$*" >&2
+  exit 1
+}
+
+command -v umu-run >/dev/null 2>&1 ||
+  die 'umu-run is not installed; it comes from the umu-launcher package'
+
+# The prefix is per app name. --list just shows which ones exist.
+list_apps() {
+  local dir found=0
+  for dir in "$HOME"/Games/*/; do
+    [[ -f ${dir}system.reg ]] || continue
+    found=1
+    printf '%s\t%s\n' "$(basename "$dir")" "${dir%/}"
+  done
+  ((found)) || printf 'no wine prefixes in %s yet\n' "$HOME/Games"
+}
+
+case ${1-} in
+  '')
+    usage >&2
+    exit 1
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  -l | --list)
+    list_apps
+    exit 0
+    ;;
+  --prefix)
+    [[ -n ${2-} ]] || die 'give an app name: winapp --prefix <app-name>'
+    printf '%s\n' "$HOME/Games/$2"
+    exit 0
+    ;;
+esac
+
+(($# >= 2)) || {
+  usage >&2
+  exit 1
+}
+
+app=$1
+exe=$2
+shift 2
+
+[[ $app =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
+  die "app name must be letters, digits, dot, dash or underscore: $app"
+
+PREFIX=${WINEPREFIX:-$HOME/Games/$app}
+# umu and Proton want an absolute path; a relative one breaks the prefix lookup.
+PREFIX=$(realpath -m -- "$PREFIX")
+export WINEPREFIX=$PREFIX
+export PROTONPATH=${PROTONPATH:-GE-Proton}
+export GAMEID=${GAMEID:-umu-${app,,}}
+export PROTON_VERB=run
+
+# A "C:\..." path is handed to Proton untouched: it is resolved inside the
+# prefix under drive_c, where this shell cannot look. Anything else has to be a
+# real file out here.
+if [[ $exe =~ ^[A-Za-z]:[\\/] ]]; then
+  :
+elif [[ ! -e $exe ]]; then
+  die "no such file: $exe"
+elif [[ -d $exe ]]; then
+  die "$exe is a directory; point winapp at an executable"
+fi
+
+# Hyprland sets xwayland:force_zero_scaling, so wine windows are not scaled by
+# the compositor. Wine reads its DPI from the prefix registry once at startup,
+# so match it to the focused monitor's scale on every launch. Skipped while the
+# prefix is running: the running app ignores it and wineserver rewrites
+# user.reg on exit. Same reasoning as /usr/share/omarchy/bin/omarchy-launch-battlenet.
+prefix_running() {
+  local pid prefix
+  for pid in $(pgrep -x wineserver 2>/dev/null); do
+    prefix=$(tr '\0' '\n' </proc/"$pid"/environ 2>/dev/null | sed -n 's/^WINEPREFIX=//p')
+    [[ -n $prefix && $(realpath -m -- "$prefix" 2>/dev/null) == "$PREFIX" ]] && return 0
+  done
+  return 1
+}
+
+match_dpi_to_monitor_scale() {
+  local scale dpi reg="$PREFIX/user.reg"
+  [[ -f $reg ]] || return 0
+  command -v hyprctl >/dev/null 2>&1 || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  scale=$(hyprctl monitors -j 2>/dev/null |
+    jq -r '.[] | select(.focused == true) | .scale' 2>/dev/null | head -1)
+  [[ $scale =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 0
+
+  dpi=$(awk -v scale="$scale" 'BEGIN { printf "%d", scale * 96 + 0.5 }')
+  grep -q '^"LogPixels"=dword:' "$reg" 2>/dev/null || return 0
+  sed -i "s/^\"LogPixels\"=dword:[0-9a-f]\{8\}$/\"LogPixels\"=dword:$(printf '%08x' "$dpi")/" "$reg"
+}
+
+if [[ ! ${WINAPP_NO_DPI-} ]] && ! prefix_running; then
+  match_dpi_to_monitor_scale
+fi
+
+if [[ ! -d $PREFIX/drive_c ]]; then
+  printf 'winapp: creating %s (first launch builds the prefix, about a minute)\n' \
+    "$PREFIX" >&2
+fi
+
+exec umu-run "$exe" "$@"

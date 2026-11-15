@@ -3,9 +3,25 @@
 #
 # Tracked in ~/Develop/oma-malleations. Installed as ~/.local/bin/winapp.
 #
-#   winapp <app-name> <exe> [args...]
-#   winapp --list
-#   winapp --prefix <app-name>
+#   winapp <app-name> <exe> [args...]   register (or change) and run
+#   winapp <app-name> [args...]         run what <app-name> is registered to
+#   winapp --list                       registered apps and prefixes
+#   winapp --set <app-name> <exe>       register without running
+#   winapp --forget <app-name>          forget it (the prefix stays)
+#   winapp --prefix <app-name>          where that app's prefix lives
+#
+# The executable is remembered, so it is given once and never again:
+#
+#   winapp sol ~/Games/MS_Solitaire_Windows_XP/sol.exe   # registers + runs
+#   winapp sol                                          # runs it
+#   winapp sol -windowed                                # ...with arguments
+#
+# For something that needs installing, point the first run at the installer and
+# the second at what it installed - same app name, new executable:
+#
+#   winapp mysol ~/Downloads/setup.exe                   # installs
+#   winapp mysol 'C:\Program Files\MySol\sol.exe'        # re-registers, runs
+#   winapp mysol                                         # from now on
 #
 # There is no wine on this machine and none is needed: umu-launcher (the
 # umu-run package) is the supported way to run Proton outside Steam, and the
@@ -21,33 +37,51 @@
 #                apps unscaled here, so wine has to be told; see below)
 #   MANGOHUD=1   passed through when set, as in omarchy-launch-battlenet
 #
-# The exe is a unix path (must exist) or a C:\ path resolved inside the prefix,
-# which is how an app installed by a previous run is started again:
-#
-#   winapp mysol ~/Downloads/setup.exe            # once, to install
-#   winapp mysol 'C:\Program Files\MySol\sol.exe' # from then on
-#
-# Nothing is downloaded: umu reports "GE-Proton is up to date" and "steamrt4 is
-# up to date" from the local cache, so this works offline.
+# The registry is one file per app under ~/.local/state/winapp/apps/, holding
+# the executable string exactly as it was given (unix path or C:\ path), the
+# same convention ~/.local/state/omarun/ uses for its history. Nothing is
+# downloaded: umu reports "GE-Proton is up to date" and "steamrt4 is up to date"
+# from the local cache, so this works offline.
 
 set -euo pipefail
 
+state=${XDG_STATE_HOME:-$HOME/.local/state}/winapp
+apps=$state/apps
+
+# win_path <string>: true for C:\..., or C:/... - a path Proton resolves inside
+# the prefix. Done with globs, not a regex: bash's [[ =~ ]] chokes on a
+# backslash inside a bracket expression.
+win_path() {
+  local rest=${1:2}
+  [[ $1 == ?:* ]] || return 1
+  [[ $rest == /* || $rest == \\* ]]
+}
+
 usage() {
   cat <<'EOF'
-Usage: winapp <app-name> <exe> [args...]
-       winapp --list
-       winapp --prefix <app-name>
+Usage: winapp <app-name> <exe> [args...]   register (or change) and run
+       winapp <app-name> [args...]         run what it is registered to
+       winapp --list                       registered apps and prefixes
+       winapp --set <app-name> <exe>       register without running
+       winapp --forget <app-name>          forget it (the prefix stays)
+       winapp --prefix <app-name>          where that app's prefix lives
 
   app-name   Short name for the app. The wine prefix is ~/Games/<app-name>:
-             created on first launch (about a minute), reused after that.
-             Keep one app per name so their registries cannot collide.
-  exe        A unix path, or a C:\ path inside the prefix.
+             created on the first launch (about a minute), reused after that.
+             It is also the key the executable is remembered under, so keep one
+             app per name - two apps sharing a prefix collide in the registry.
+  exe        A unix path, or a C:\ path inside the prefix. Given once; from
+             then on the app name alone is enough. A later run with a different
+             path re-registers, which is how an installer hands over to what it
+             installed.
 
 Examples:
-  winapp solitaire ~/Games/MS_Solitaire_Windows_XP/sol.exe
+  winapp sol ~/Games/MS_Solitaire_Windows_XP/sol.exe   # register + run
+  winapp sol                                          # just run it
   winapp notepad 'C:\windows\notepad.exe'
-  winapp mysol ~/Downloads/setup.exe          # install
-  winapp mysol 'C:\Program Files\MySol\sol.exe'  # then run what it installed
+  winapp mysol ~/Downloads/setup.exe                  # install
+  winapp mysol 'C:\Program Files\MySol\sol.exe'       # then point at the app
+  winapp mysol                                        # from now on
 
 Environment overrides:
   PROTONPATH     Proton build to use (default: GE-Proton)
@@ -58,7 +92,7 @@ Environment overrides:
                  do not touch LogPixels (leave the prefix's DPI alone)
 
 Exit status is umu's. A failed first launch leaves the half-built prefix in
-place; delete ~/Games/<app-name> to start over.
+place; winapp --forget <app-name> then rm -rf ~/Games/<app-name> starts over.
 EOF
 }
 
@@ -70,15 +104,63 @@ die() {
 command -v umu-run >/dev/null 2>&1 ||
   die 'umu-run is not installed; it comes from the umu-launcher package'
 
-# The prefix is per app name. --list just shows which ones exist.
+check_name() {
+  [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
+    die "app name must be letters, digits, dot, dash or underscore: $1"
+}
+
+prefix_of() { printf '%s\n' "$HOME/Games/$1"; }
+
+# registered <app-name>: print the remembered executable, fail if there is none.
+registered() {
+  local file="$apps/$1" exe
+  [[ -f $file ]] || return 1
+  IFS= read -r exe <"$file" || return 1
+  [[ -n $exe ]] || return 1
+  printf '%s\n' "$exe"
+}
+
+# register <app-name> <exe>: one file per app, written atomically so an
+# interrupted run never leaves a half-written entry behind.
+register() {
+  mkdir -p "$apps"
+  printf '%s\n' "$2" >"$apps/.$1.new.$$"
+  mv -f "$apps/.$1.new.$$" "$apps/$1"
+}
+
 list_apps() {
-  local dir found=0
+  local name exe dir prefix
+  local -a names=()
+
+  if [[ -d $apps ]]; then
+    for dir in "$apps"/*; do
+      [[ -f $dir ]] && names+=("$(basename "$dir")")
+    done
+  fi
   for dir in "$HOME"/Games/*/; do
     [[ -f ${dir}system.reg ]] || continue
-    found=1
-    printf '%s\t%s\n' "$(basename "$dir")" "${dir%/}"
+    names+=("$(basename "$dir")")
   done
-  ((found)) || printf 'no wine prefixes in %s yet\n' "$HOME/Games"
+
+  if ((${#names[@]} == 0)); then
+    printf 'nothing yet: winapp <app-name> <exe> registers an app\n'
+    return 0
+  fi
+
+  mapfile -t names < <(printf '%s\n' "${names[@]}" | sort -u)
+  # Two columns only: the prefix is always ~/Games/<app-name> and its full path
+  # is longer than the run line, so printing it here only breaks the alignment.
+  printf '%-14s %s\n' APP RUNS
+  for name in "${names[@]}"; do
+    prefix=$(prefix_of "$name")
+    if exe=$(registered "$name"); then
+      printf '%-14s %s\n' "$name" "$exe"
+    elif [[ -d $prefix/drive_c ]]; then
+      printf '%-14s %s (prefix %s)\n' "$name" '(not registered)' "$prefix"
+    else
+      printf '%-14s %s\n' "$name" '(not registered)'
+    fi
+  done
 }
 
 case ${1-} in
@@ -96,24 +178,74 @@ case ${1-} in
     ;;
   --prefix)
     [[ -n ${2-} ]] || die 'give an app name: winapp --prefix <app-name>'
-    printf '%s\n' "$HOME/Games/$2"
+    prefix_of "$2"
+    exit 0
+    ;;
+  --set)
+    (($# == 3)) || die 'usage: winapp --set <app-name> <exe>'
+    check_name "$2"
+    register "$2" "$3"
+    printf 'winapp: %s runs %s\n' "$2" "$3" >&2
+    exit 0
+    ;;
+  --forget)
+    (($# == 2)) || die 'usage: winapp --forget <app-name>'
+    check_name "$2"
+    if [[ -f $apps/$2 ]]; then
+      rm -f "$apps/$2"
+      printf 'winapp: forgot %s (its prefix is still at %s)\n' \
+        "$2" "$(prefix_of "$2")" >&2
+    else
+      printf 'winapp: %s was not registered\n' "$2" >&2
+    fi
     exit 0
     ;;
 esac
 
-(($# >= 2)) || {
-  usage >&2
-  exit 1
-}
-
 app=$1
-exe=$2
-shift 2
+shift
+check_name "$app"
 
-[[ $app =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
-  die "app name must be letters, digits, dot, dash or underscore: $app"
+# Decide whether the next word is a new executable or an argument for the
+# remembered one. A flag (-windowed, --safe) is always an argument, so a
+# registered app can take options without winapp eating them.
+exe=
+if (($#)); then
+  if win_path "$1" || [[ -e $1 ]]; then
+    exe=$1
+    shift
+  elif [[ $1 == -* ]]; then
+    :
+  else
+    die "no such file: $1"
+  fi
+fi
 
-PREFIX=${WINEPREFIX:-$HOME/Games/$app}
+if [[ -z $exe ]]; then
+  exe=$(registered "$app") || die "$app is not registered yet; give the executable once:
+  winapp $app <exe>"
+fi
+
+# A "C:\..." path is handed to Proton untouched: it is resolved inside the
+# prefix under drive_c, where this shell cannot look. Anything else has to be a
+# real file out here, and it has to still be there on later runs.
+if win_path "$exe"; then
+  :
+elif [[ ! -e $exe ]]; then
+  if registered "$app" >/dev/null; then
+    die "$app is registered to $exe, which is gone; point it somewhere else:
+  winapp --set $app <exe>"
+  fi
+  die "no such file: $exe"
+elif [[ -d $exe ]]; then
+  die "$exe is a directory; point winapp at an executable"
+fi
+
+# Remember unix paths absolute: a relative one would only work from the cwd it
+# was given in.
+win_path "$exe" || exe=$(realpath -- "$exe")
+
+PREFIX=${WINEPREFIX:-$(prefix_of "$app")}
 # umu and Proton want an absolute path; a relative one breaks the prefix lookup.
 PREFIX=$(realpath -m -- "$PREFIX")
 export WINEPREFIX=$PREFIX
@@ -121,15 +253,24 @@ export PROTONPATH=${PROTONPATH:-GE-Proton}
 export GAMEID=${GAMEID:-umu-${app,,}}
 export PROTON_VERB=run
 
-# A "C:\..." path is handed to Proton untouched: it is resolved inside the
-# prefix under drive_c, where this shell cannot look. Anything else has to be a
-# real file out here.
-if [[ $exe =~ ^[A-Za-z]:[\\/] ]]; then
-  :
-elif [[ ! -e $exe ]]; then
-  die "no such file: $exe"
-elif [[ -d $exe ]]; then
-  die "$exe is a directory; point winapp at an executable"
+# Remember it, and say so - but only when it is new or has changed, so a plain
+# "winapp sol" stays quiet.
+previous=$(registered "$app" || true)
+if [[ $previous != "$exe" ]]; then
+  register "$app" "$exe"
+  if [[ -z $previous ]]; then
+    printf 'winapp: %s -> %s\n' "$app" "$exe" >&2
+  else
+    printf 'winapp: %s now runs %s (was %s)\n' "$app" "$exe" "$previous" >&2
+  fi
+fi
+
+# An installer is a one-off: worth saying how to hand over to what it installs,
+# because re-running the installer is almost never what you want next time.
+base=${exe##*[/\\]}
+if [[ $previous != "$exe" && ! -d $PREFIX/drive_c && ${base,,} =~ (setup|install|update|unins) ]]; then
+  printf 'winapp: that looks like an installer; once it finishes, point %s at what it installed:\n' "$app" >&2
+  printf "  winapp --set %s 'C:\\\\Program Files\\\\...\\\\app.exe'\n" "$app" >&2
 fi
 
 # Hyprland sets xwayland:force_zero_scaling, so wine windows are not scaled by

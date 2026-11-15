@@ -15,7 +15,7 @@ three-command NOPASSWD rule under `/usr/local/` and `/etc/`.
 |---|---|---|
 | `bin/fluxfm` | `~/.local/bin/fluxfm` | Plays FluxFM (Berlin) channels in `cliamp`, the TUI player Omarchy ships |
 | `bin/omarun` | `~/.local/bin/omarun` | Windows+R "run now" box: `SUPER + R`, type a command, it runs detached and the box closes |
-| `bin/winapp` | `~/.local/bin/winapp` | Runs any Windows `.exe` on Proton through `umu-run` + GE-Proton, one prefix per app — no wine needed |
+| `bin/winapp` | `~/.local/bin/winapp` | Runs any Windows `.exe` on Proton through `umu-run` + GE-Proton, no wine needed: register an app once (`winapp sol <exe>`), then just `winapp sol` |
 | `bin/fancontrol` | `/usr/local/bin/fancontrol` | ThinkPad fan speed from `SUPER + CTRL + ALT + EQUAL` / `MINUS`, with a temperature floor and auto fallback |
 | `bin/fancontrol-root` | `/usr/local/lib/oma-malleations/fancontrol-root` | Root half: the only thing allowed to write `/proc/acpi/ibm/fan` |
 | `config/hypr/bindings.lua` | `~/.config/hypr/bindings.lua` | `SUPER + R` → Run now, `SUPER + SHIFT + R` → Run again, and the fan keys |
@@ -130,16 +130,46 @@ Omarchy's gaming setup already left everything else in place:
 | Steam Linux Runtime 4 | `~/.local/share/umu/steamrt4` (cached, so this works offline) |
 
 `omarchy-launch-battlenet` is the same four environment variables; `winapp` is
-that recipe for any executable, plus one prefix per app name:
+that recipe for any executable, plus one prefix per app name, and it remembers
+the executable so a path is given once and never again:
 
 ```bash
-winapp <app-name> <exe> [args...]
-winapp --list                     # prefixes that exist
-winapp --prefix <app-name>        # where one lives
+winapp <app-name> <exe> [args...]   # first time: registers, then runs
+winapp <app-name> [args...]         # after that: just the name
 
-winapp solitaire ~/Games/MS_Solitaire_Windows_XP/sol.exe
-winapp notepad 'C:\windows\notepad.exe'
-MANGOHUD=1 winapp solitaire ~/Games/MS_Solitaire_Windows_XP/sol.exe
+winapp --list                       # what is registered, and the prefixes there are
+winapp --set <app-name> <exe>       # register/change without running
+winapp --forget <app-name>          # forget it (the prefix stays)
+winapp --prefix <app-name>          # where that app's prefix lives
+
+winapp sol ~/Games/MS_Solitaire_Windows_XP/sol.exe   # registers + runs
+winapp sol                                          # runs it
+winapp sol -windowed                                # ...with arguments
+MANGOHUD=1 winapp sol                               # with the FPS overlay
+```
+
+The registry is one small file per app in `~/.local/state/winapp/apps/`,
+holding the executable exactly as given (a unix path is stored absolute, so it
+does not depend on the cwd it was registered from) — the same convention
+`~/.local/state/omarun/` uses for its history. Deleting that file is what
+`--forget` does; the 285 MB prefix in `~/Games/` is left alone.
+
+A name that is registered but whose executable has since been deleted says so,
+and `--set` fixes it:
+
+```
+winapp: sol is registered to /home/sral/x/sol.exe, which is gone; point it somewhere else:
+  winapp --set sol <exe>
+```
+
+`winapp --list` shows what is registered plus any prefix that exists without a
+registration (Omarchy's own installers leave one, e.g. `battlenet`), which is
+also how you find out that a prefix is there before registering it:
+
+```
+APP            RUNS
+battlenet      (not registered) (prefix /home/sral/Games/battlenet)
+solitaire      /home/sral/Games/MS_Solitaire_Windows_XP/sol.exe
 ```
 
 | Env | Default | Why |
@@ -149,27 +179,47 @@ MANGOHUD=1 winapp solitaire ~/Games/MS_Solitaire_Windows_XP/sol.exe
 | `GAMEID` | `umu-<app-name>` | per-app fixes; an anti-cheat title wants its real id from umu's database |
 | `PROTON_VERB` | `run` | — |
 
-To install an app rather than run a portable one, point it at the installer and
-then at what the installer produced, under the same app name:
+To install an app rather than run a portable one, point the first run at the
+installer and the second at what the installer produced, under the same app
+name — giving a different executable re-registers it:
 
 ```bash
-winapp mysol ~/Downloads/setup.exe              # once
-winapp mysol 'C:\Program Files\MySol\sol.exe'  # from then on
+winapp mysol ~/Downloads/setup.exe              # installs
+winapp mysol 'C:\Program Files\MySol\sol.exe'  # re-registers, runs
+winapp mysol                                    # from then on
+```
+
+When the executable being registered looks like an installer (`setup`,
+`install`, `update`, `unins`) and its prefix is brand new, `winapp` says how to
+hand over instead of leaving you to re-run the installer by accident:
+
+```
+winapp: mysol -> /home/sral/Downloads/setup.exe
+winapp: that looks like an installer; once it finishes, point mysol at what it installed:
+  winapp --set mysol 'C:\Program Files\...\app.exe'
 ```
 
 **Worth knowing:**
 
 - **First launch of a new app name takes about a minute** while the prefix is
   built. Everything after that is immediate. A half-built prefix is left in
-  place if the first run fails; `rm -rf ~/Games/<app-name>` starts over.
-- **DPI is matched to the monitor.** `envs.lua` sets
+  place if the first run fails: `winapp --forget <app-name>` drops the
+  registration and `rm -rf ~/Games/<app-name>` starts over from nothing.
+- **DPI is matched to the focused monitor.** `envs.lua` sets
   `xwayland:force_zero_scaling`, so wine windows are not scaled by the
   compositor and wine has to be told its DPI via `LogPixels` — which it reads
   once at startup. `winapp` writes the focused monitor's scale into the prefix
   before launching, skipping the write while a `wineserver` for that prefix is
   alive (it would be ignored, and rewritten on exit). Same reasoning as
-  `omarchy-launch-battlenet`. Consequence: the **first** run of a brand-new
-  prefix is still at 96 DPI, because there is no `user.reg` to write yet.
+  `omarchy-launch-battlenet`. Both readings were seen: `eDP-1` at scale 1.25 →
+  `LogPixels` `0x78` (120 dpi), external `DP-3` at scale 1 → `0x60` (96 dpi).
+  So the value follows whichever monitor is focused at launch, and the
+  **first** run of a brand-new prefix stays at 96 dpi because there is no
+  `user.reg` to write yet.
+- **`--` separation for odd cases.** A second word that is an existing path (or
+  a `C:\` path) is taken as a new executable; a word starting with `-` is
+  always an argument for the app, so `winapp sol -windowed` cannot be mistaken
+  for a file.
 - **`~/Games/mi2` and `~/Games/IndianaJonesFateOfAtlantis` are not Windows
   apps** — they are ScummVM game data (`Atlantis` has no `.EXE` at all).
   `MONKEY2.EXE` is a DOS binary: Proton will launch it and it will still want
@@ -177,12 +227,14 @@ winapp mysol 'C:\Program Files\MySol\sol.exe'  # from then on
 - **Checked end to end**, not just assumed: `sol.exe` from
   `~/Games/MS_Solitaire_Windows_XP` opened a "Solitaire" window under
   GE-Proton, with umu reporting `GE-Proton is up to date` and `steamrt4 is up
-  to date` (so nothing was downloaded). The throwaway prefix was removed
+  to date` (so nothing was downloaded) — once with the path given, and then
+  again as plain `winapp solitaire`, which read the executable out of the
+  registry and opened the same window. Throwaway prefixes were removed
   afterwards.
 
 A launcher entry is the same thing as the existing ones — copy
 `~/.local/share/applications/battlenet.desktop` and point `Exec=` at
-`winapp <app-name> <exe>`.
+`winapp <app-name>` (the name is enough once it is registered).
 
 ### Fan control
 

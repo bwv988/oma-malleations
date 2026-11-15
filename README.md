@@ -18,7 +18,7 @@ three-command NOPASSWD rule under `/usr/local/` and `/etc/`.
 | `bin/winapp` | `~/.local/bin/winapp` | Runs any Windows `.exe` on Proton through `umu-run` + GE-Proton, no wine needed: register an app once (`winapp sol <exe>`), then just `winapp sol` |
 | `bin/fancontrol` | `/usr/local/bin/fancontrol` | ThinkPad fan speed from `SUPER + CTRL + ALT + EQUAL` / `MINUS`, with a temperature floor and auto fallback |
 | `bin/fancontrol-root` | `/usr/local/lib/oma-malleations/fancontrol-root` | Root half: the only thing allowed to write `/proc/acpi/ibm/fan` |
-| `config/hypr/bindings.lua` | `~/.config/hypr/bindings.lua` | `SUPER + R` → Run now, `SUPER + SHIFT + R` → Run again, and the fan keys |
+| `config/hypr/bindings.lua` | `~/.config/hypr/bindings.lua` | `SUPER + R` → Run now, `SUPER + SHIFT + R` → Run again, `CTRL + ALT + LEFT` / `RIGHT` → previous / next desktop, and the fan keys |
 | `config/omarchy/extensions/omarchy-menu.jsonc` | `~/.config/omarchy/extensions/omarchy-menu.jsonc` | `SUPER + SPACE` → **Run now**, **Run again**, **FluxFM** (one Enter), **FluxFM Channels** (15 stations) and **Fan control** |
 | `config/tmux/oma-malleations.conf` | `~/.config/tmux/oma-malleations.conf` | My tmux deltas over the Omarchy default: `Ctrl+a` prefix, `Shift+arrow` window switching |
 | `system/` | `/etc/systemd/system/`, `/etc/modprobe.d/`, `/etc/sudoers.d/` | Guard unit, `fan_control=1` module option, NOPASSWD rule for the three fan commands (copied as root, never symlinked) |

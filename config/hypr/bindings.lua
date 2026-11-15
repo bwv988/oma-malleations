@@ -46,3 +46,14 @@ o.bind("SUPER + SHIFT + R", "Run again", "omarun --history")
 o.bind("SUPER + CTRL + ALT + EQUAL", "Fan faster", "/usr/local/bin/fancontrol up")
 o.bind("SUPER + CTRL + ALT + MINUS", "Fan slower", "/usr/local/bin/fancontrol down")
 o.bind("SUPER + CTRL + ALT + 0", "Fan auto", "/usr/local/bin/fancontrol auto")
+
+-- Virtual desktops on CTRL + ALT + LEFT/RIGHT, the way most desktops do it.
+-- Omarchy already switches workspaces with SUPER + TAB / SUPER + SHIFT + TAB,
+-- and these use the same "m+1"/"m-1" dispatcher, so they walk the focused
+-- monitor's own workspaces 1-10 (default/hypr/monitor-workspaces.lua) instead
+-- of jumping to a global number. CTRL + ALT + LEFT/RIGHT was free: SUPER +
+-- ALT + LEFT/RIGHT is move-window-into-group, SUPER + SHIFT + ALT + LEFT/RIGHT
+-- is move-workspace-to-monitor, and SUPER + SHIFT + CTRL + LEFT/RIGHT is
+-- move-window-to-monitor. Checked with `omarchy menu keybindings --print`.
+o.bind("CTRL + ALT + RIGHT", "Next desktop", hl.dsp.focus({ workspace = "m+1" }))
+o.bind("CTRL + ALT + LEFT", "Previous desktop", hl.dsp.focus({ workspace = "m-1" }))

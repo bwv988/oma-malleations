@@ -287,7 +287,8 @@ show_status() {
     "$HOME/.local/bin/omarun" \
     "$HOME/.local/bin/winapp" \
     "$HOME/.config/hypr/bindings.lua" \
-    "$HOME/.config/tmux/oma-malleations.conf"; do
+    "$HOME/.config/tmux/oma-malleations.conf" \
+    "$HOME/.config/systemd/user/omarchy-sleep-lock.service.d/10-conda-path.conf"; do
     if [[ -L $dest ]]; then
       printf '%-52s -> %s\n' "$dest" "$(readlink "$dest")"
     elif [[ -e $dest ]]; then
@@ -347,6 +348,11 @@ link "config/hypr/bindings.lua" "$HOME/.config/hypr/bindings.lua"
 # tmux: the snippet holds only the deltas, the stock file just sources it.
 link "config/tmux/oma-malleations.conf" "$HOME/.config/tmux/oma-malleations.conf"
 layer "tmux/tmux.conf" "source-file ~/.config/tmux/oma-malleations.conf"
+# sleep-lock: the unit runs `dbus-monitor` by bare name, and conda's dbus tools
+# come earlier on PATH; pin a system PATH for that unit. Temporary, until
+# https://github.com/omacom/omarchy/issues/19331 is fixed.
+link "config/systemd/user/omarchy-sleep-lock.service.d/10-conda-path.conf" \
+  "$HOME/.config/systemd/user/omarchy-sleep-lock.service.d/10-conda-path.conf"
 
 if ((user_only)); then
   fan_system_ok=0
@@ -380,6 +386,9 @@ if ((!dry_run)); then
   if command -v omarchy-restart-tmux >/dev/null 2>&1; then
     omarchy-restart-tmux >/dev/null 2>&1 || true
   fi
+  # sleep-lock: a user-unit drop-in only counts once the manager re-reads it.
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
+  systemctl --user try-restart omarchy-sleep-lock.service >/dev/null 2>&1 || true
   if ((!fan_system_ok)); then
     printf '\nDone (user files only). Fan control is not fully installed; run ./install.sh without --user-only.\n'
   else

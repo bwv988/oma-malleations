@@ -21,6 +21,7 @@ three-command NOPASSWD rule under `/usr/local/` and `/etc/`.
 | `config/hypr/bindings.lua` | `~/.config/hypr/bindings.lua` | `SUPER + R` → Run now, `SUPER + SHIFT + R` → Run again, `CTRL + ALT + LEFT` / `RIGHT` → previous / next desktop, and the fan keys |
 | `config/omarchy/extensions/omarchy-menu.jsonc` | `~/.config/omarchy/extensions/omarchy-menu.jsonc` | `SUPER + SPACE` → **Run now**, **Run again**, **FluxFM** (one Enter), **FluxFM Channels** (15 stations) and **Fan control** |
 | `config/tmux/oma-malleations.conf` | `~/.config/tmux/oma-malleations.conf` | My tmux deltas over the Omarchy default: `Ctrl+a` prefix, `Shift+arrow` window switching |
+| `config/systemd/user/omarchy-sleep-lock.service.d/10-conda-path.conf` | `~/.config/systemd/user/omarchy-sleep-lock.service.d/10-conda-path.conf` | Pins the sleep-lock unit's `PATH` so conda's `dbus-monitor` cannot shadow the system one — **temporary**, delete it once [issue #19331](https://github.com/omacom/omarchy/issues/19331) is fixed |
 | `system/` | `/etc/systemd/system/`, `/etc/modprobe.d/`, `/etc/sudoers.d/` | Guard unit, `fan_control=1` module option, NOPASSWD rule for the three fan commands (copied as root, never symlinked) |
 | `install.sh` | – | Idempotent symlink installer with backups; layers the tmux deltas onto the stock file and installs the fan-control root bits |
 
@@ -355,6 +356,41 @@ its quiet curve is much lower than the EC's aggressive auto at 48 °C (≈ 5500 
 here). The table above is a manual *floor*, not a target: it lets `-` get below
 auto at normal temperatures, while the guard raises the level if the temperature
 actually climbs. The kernel watchdog is the backstop.
+
+### Sleep lock (temporary)
+
+`omarchy-sleep-lock.service` is what locks the screen before suspend. Here it was
+restart-looping every ~2 seconds — 22,821 times in ~12h, with the machine not
+sleeping at all — and lock-before-suspend silently never ran.
+
+Cause: `omarchy-system-sleep-monitor` calls `dbus-monitor --system` by bare name.
+Conda is prepended to `PATH` in `~/.bashrc` even for non-interactive shells, and
+that `PATH` reaches the systemd user manager, so the name resolves to conda's
+`dbus-monitor`. That copy is built with its own prefix, so the system bus becomes
+`~/opt/miniconda3/var/run/dbus/system_bus_socket`:
+
+```
+Failed to open connection to system bus: Failed to connect to socket
+/home/sral/opt/miniconda3/var/run/dbus/system_bus_socket: No such file or directory
+```
+
+The monitor died before `systemd-inhibit` was ever established, so there was no
+delay inhibitor and no lock. Nothing surfaced it: the unit was "restarting", not
+"failed", and systemd's start rate limit never engaged.
+
+The drop-in pins a system-only `PATH` for that one unit, which holds no matter
+what the session imports into the manager environment:
+
+```bash
+systemctl --user show omarchy-sleep-lock.service -p Environment -p NRestarts
+systemd-inhibit --list | grep Omarchy   # expect the "Lock screen before suspend" row
+```
+
+**Delete it when the Omarchy fix lands.** [Issue #19331](https://github.com/omacom/omarchy/issues/19331)
+asks for `/usr/bin/dbus-monitor` by absolute path. Once that ships: drop
+`config/systemd/user/` from this repo, `rm -rf ~/.config/systemd/user/omarchy-sleep-lock.service.d`,
+then `systemctl --user daemon-reload && systemctl --user restart omarchy-sleep-lock.service`
+and confirm the inhibitor is still listed.
 
 ### FluxFM usage
 
